@@ -43,6 +43,15 @@ fun PostCard(
     onOpenGallery: (Post) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
+    // Hoist composition locals / state reads once per card (avoids repeated
+    // lookups while scrolling on lower-end devices).
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isSaved = app.redlib.now.data.Repo.isSaved(post.id)
+    val cardSize = app.redlib.now.data.Settings.cardSize
+    val showMedia = app.redlib.now.data.Settings.showMedia
+    val linkPreviews = app.redlib.now.data.Settings.linkPreviews
+    val showSelftext = app.redlib.now.data.Settings.showSelftext
+
     Card(
         onClick = onClick,
         modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
@@ -92,7 +101,7 @@ fun PostCard(
             Text(
                 post.title,
                 style = MaterialTheme.typography.titleMedium.copy(
-                    fontSize = when (app.redlib.now.data.Settings.cardSize) {
+                    fontSize = when (cardSize) {
                         "large" -> 19.sp
                         "normal" -> 17.5.sp
                         else -> 16.sp
@@ -100,25 +109,29 @@ fun PostCard(
                 ),
                 fontWeight = FontWeight.SemiBold,
                 lineHeight = 20.sp,
-                maxLines = if (app.redlib.now.data.Settings.cardSize == "large") 5 else 3,
+                maxLines = if (cardSize == "large") 5 else 3,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
             )
 
             // Media preview (tap = full screen). Videos get a centered play
             // button overlay so they're unmistakable.
-            if (app.redlib.now.data.Settings.showMedia && post.imageUrl != null && post.externalUrl == null) {
-                // Bug #3: cache the localUri lookup with remember so we
-                // don't hit the filesystem on every recomposition / scroll.
+            if (showMedia && post.imageUrl != null && post.externalUrl == null) {
+                // Cache the localUri lookup with remember so we don't hit the
+                // filesystem on every recomposition / scroll.
                 val previewUri = remember(post.imageUrl) {
                     app.redlib.now.data.MediaCache.localUri(post.imageUrl) ?: post.imageUrl
+                }
+                val mediaMaxHeight = when (cardSize) {
+                    "large" -> 340.dp
+                    "normal" -> 280.dp
+                    else -> 220.dp
                 }
                 Box(
                     Modifier
                         .fillMaxWidth()
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable {
-                            app.redlib.now.net.Logd.d("card media tap: gallery=" + post.isGallery + " " + post.id)
                             if (post.isGallery) onOpenGallery(post) else onOpenMedia()
                         },
                 ) {
@@ -126,7 +139,7 @@ fun PostCard(
                         model = previewUri,
                         contentDescription = post.title,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth().heightIn(max = if (app.redlib.now.data.Settings.cardSize == "large") 340.dp else if (app.redlib.now.data.Settings.cardSize == "normal") 280.dp else 220.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(max = mediaMaxHeight),
                     )
                     when {
                         post.isVideo -> Icon(
@@ -158,7 +171,7 @@ fun PostCard(
             // External-link bar (reference card style): link icon, domain,
             // small thumbnail when the instance provides one.
             post.externalUrl?.let { url ->
-                if (!app.redlib.now.data.Settings.linkPreviews) return@let
+                if (!linkPreviews) return@let
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier
@@ -196,7 +209,7 @@ fun PostCard(
                 }
             }
 
-            post.selfTextPreview?.takeIf { app.redlib.now.data.Settings.showSelftext && post.imageUrl == null }?.let {
+            post.selfTextPreview?.takeIf { showSelftext && post.imageUrl == null }?.let {
                 Text(
                     linkify(it, MaterialTheme.colorScheme.secondary),
                     style = MaterialTheme.typography.bodySmall,
@@ -217,7 +230,6 @@ fun PostCard(
                     Spacer(Modifier.width(4.dp))
                 }
                 Spacer(Modifier.weight(1f))
-                val context = androidx.compose.ui.platform.LocalContext.current
                 IconButton(
                     onClick = {
                         val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
@@ -234,9 +246,9 @@ fun PostCard(
                 }
                 IconButton(onClick = { app.redlib.now.data.Repo.toggleSave(post) }, modifier = Modifier.size(32.dp)) {
                     Icon(
-                        if (app.redlib.now.data.Repo.isSaved(post.id)) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                        if (isSaved) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                         contentDescription = "Save post",
-                        tint = if (app.redlib.now.data.Repo.isSaved(post.id)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        tint = if (isSaved) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(16.dp),
                     )
                 }

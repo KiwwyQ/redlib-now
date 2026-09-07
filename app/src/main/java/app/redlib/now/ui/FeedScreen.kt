@@ -5,14 +5,13 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.BookmarkBorder
-import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -81,25 +80,21 @@ fun FeedScreen(
                     onClick = onOpenSearch,
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                 )
+                // Pinned list only — no per-row unpin (avoids misclicks).
+                // Pin / unpin lives on the subreddit feed top bar.
+                if (Repo.historyState.isNotEmpty()) {
+                    Text(
+                        "Pinned",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp),
+                    )
+                }
                 Repo.historyState.forEach { sub ->
                     NavigationDrawerItem(
-                        icon = { Icon(Icons.Filled.History, contentDescription = null) },
                         label = { Text("r/$sub") },
                         selected = currentFeed == "/r/$sub",
-                        onClick = {
-                            // Bug #6: don't auto-re-add to history on click.
-                            // Viewing a subreddit must not auto-subscribe.
-                            onOpenFeed("/r/$sub")
-                        },
-                        badge = {
-                            IconButton(onClick = { Repo.remove(sub) }) {
-                                Icon(
-                                    Icons.Filled.Close,
-                                    contentDescription = "Remove r/$sub",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        },
+                        onClick = { onOpenFeed("/r/$sub") },
                         modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                     )
                 }
@@ -174,6 +169,32 @@ fun FeedScreen(
                     )
                 },
                 actions = {
+                    // Pin / unpin only while viewing a real subreddit.
+                    val subName = remember(currentFeed) {
+                        currentFeed
+                            .removePrefix("/r/")
+                            .removeSuffix("/")
+                            .takeIf {
+                                currentFeed.startsWith("/r/") &&
+                                    it.isNotBlank() &&
+                                    it !in listOf("all", "popular")
+                            }
+                    }
+                    if (subName != null) {
+                        val isPinned = subName in Repo.historyState
+                        IconButton(
+                            onClick = {
+                                if (isPinned) Repo.remove(subName) else Repo.add(subName)
+                            },
+                        ) {
+                            Icon(
+                                if (isPinned) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                                contentDescription = if (isPinned) "Unpin r/$subName" else "Pin r/$subName",
+                                tint = if (isPinned) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                     // Sort menu (parity with the classic app's sort options).
                     var sortMenuOpen by remember { mutableStateOf(false) }
                     TextButton(onClick = { sortMenuOpen = true }) {

@@ -213,7 +213,10 @@ object MediaCache {
 
     /** Warm the cache with card images for a feed's posts (videos on view). */
     suspend fun prefetch(posts: List<Post>) = withContext(Dispatchers.IO) {
-        posts.take(30).forEach { post ->
+        // Skip entirely in data-saver mode; keep the window small so lower-end
+        // devices aren't hammered with parallel downloads while scrolling.
+        if (Settings.dataSaver) return@withContext
+        posts.take(12).forEach { post ->
             val url = post.imageUrl ?: return@forEach
             if (post.isVideo) return@forEach // full videos on demand only
             if (localUri(url) == null) getOrDownload(url)

@@ -58,10 +58,8 @@ class FeedViewModel : ViewModel() {
     fun load(path: String, initial: Boolean = false) {
         currentPath = path
 
-        // Bug #6: viewing a subreddit must NOT auto-subscribe / auto-add it
-        // to history. The user can explicitly pin via long-press in browse.
-        // Subreddits are only auto-recorded when the user explicitly opts
-        // in (pin from browse / search history).
+        // Viewing a subreddit must NOT auto-pin it. Pin/unpin is explicit
+        // via the bookmark button on the subreddit feed top bar.
 
         // Serve the 72h offline copy instantly when we have one.
         val cached = FeedCache.loadFeed(path)
