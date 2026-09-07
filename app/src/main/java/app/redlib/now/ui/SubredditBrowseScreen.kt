@@ -1,10 +1,8 @@
 package app.redlib.now.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -12,8 +10,8 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.BookmarkAdd
-import androidx.compose.material.icons.filled.BookmarkRemove
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material3.*
@@ -28,7 +26,7 @@ import androidx.compose.ui.unit.dp
 import app.redlib.now.data.Repo
 
 /** Subreddit browser: classic list-vs-grid styles over suggestions + history. */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SubredditBrowseScreen(
     onBack: () -> Unit,
@@ -36,7 +34,6 @@ fun SubredditBrowseScreen(
 ) {
     BackHandler(onBack = onBack)
     var grid by remember { mutableStateOf(true) }
-    var statusMsg by remember { mutableStateOf<String?>(null) }
 
     val subs = remember(Repo.historyState) { (Repo.historyState + Repo.SUGGESTIONS).distinct() }
 
@@ -58,16 +55,8 @@ fun SubredditBrowseScreen(
                 }
             },
         )
-        statusMsg?.let {
-            Text(
-                it,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
-        }
         if (grid) {
-            LazyVerticalGrid(columns = GridCells.Adaptive(minSize = 110.dp), contentPadding = PaddingValues(8.dp)) {
+            LazyVerticalGrid(columns = GridCells.Adaptive(minSize = 140.dp), contentPadding = PaddingValues(8.dp)) {
                 items(subs, key = { it }) { sub ->
                     val isPinned = sub in Repo.historyState
                     Column(
@@ -76,20 +65,8 @@ fun SubredditBrowseScreen(
                             .padding(5.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(subredditColor(sub).copy(alpha = 0.18f))
-                            .combinedClickable(
-                                onClick = { onOpenSubreddit(sub) },
-                                // Bug #6: explicit long-press to pin/unpin to history.
-                                onLongClick = {
-                                    if (isPinned) {
-                                        Repo.remove(sub)
-                                        statusMsg = "Removed r/$sub from history"
-                                    } else {
-                                        Repo.add(sub)
-                                        statusMsg = "Pinned r/$sub to history"
-                                    }
-                                },
-                            )
-                            .padding(vertical = 22.dp, horizontal = 6.dp),
+                            .clickable { onOpenSubreddit(sub) }
+                            .padding(vertical = 16.dp, horizontal = 6.dp),
                     ) {
                         Text(
                             "r/$sub",
@@ -99,19 +76,29 @@ fun SubredditBrowseScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        if (isPinned) {
+                        // Bug #6: explicit bookmark icon button instead of
+                        // long-press. Filled = pinned, outlined = not pinned.
+                        IconButton(
+                            onClick = {
+                                if (isPinned) Repo.remove(sub) else Repo.add(sub)
+                            },
+                            modifier = Modifier.size(28.dp).padding(top = 2.dp),
+                        ) {
                             Icon(
-                                Icons.Filled.BookmarkRemove,
-                                contentDescription = "Pinned (long-press to unpin)",
-                                tint = subredditColor(sub),
-                                modifier = Modifier.padding(top = 4.dp).size(14.dp),
+                                if (isPinned) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                                contentDescription = if (isPinned) "Unpin r/$sub" else "Pin r/$sub to history",
+                                tint = if (isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
                             )
                         }
                     }
                 }
             }
         } else {
-            LazyVerticalGrid(columns = GridCells.Adaptive(minSize = 260.dp), contentPadding = PaddingValues(8.dp)) {
+            LazyColumn(
+                contentPadding = PaddingValues(8.dp),
+                modifier = Modifier.fillMaxSize(),
+            ) {
                 items(subs, key = { it }) { sub ->
                     val isPinned = sub in Repo.historyState
                     Row(
@@ -120,19 +107,8 @@ fun SubredditBrowseScreen(
                             .padding(5.dp)
                             .clip(RoundedCornerShape(12.dp))
                             .background(subredditColor(sub).copy(alpha = 0.12f))
-                            .combinedClickable(
-                                onClick = { onOpenSubreddit(sub) },
-                                onLongClick = {
-                                    if (isPinned) {
-                                        Repo.remove(sub)
-                                        statusMsg = "Removed r/$sub from history"
-                                    } else {
-                                        Repo.add(sub)
-                                        statusMsg = "Pinned r/$sub to history"
-                                    }
-                                },
-                            )
-                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                            .clickable { onOpenSubreddit(sub) }
+                            .padding(start = 14.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
                     ) {
                         Text(
                             "r/$sub",
@@ -142,19 +118,18 @@ fun SubredditBrowseScreen(
                             textAlign = TextAlign.Start,
                             modifier = Modifier.weight(1f),
                         )
-                        if (isPinned) {
+                        // Bug #6: explicit bookmark icon button.
+                        IconButton(
+                            onClick = {
+                                if (isPinned) Repo.remove(sub) else Repo.add(sub)
+                            },
+                            modifier = Modifier.size(36.dp),
+                        ) {
                             Icon(
-                                Icons.Filled.BookmarkRemove,
-                                contentDescription = "Pinned (long-press to unpin)",
-                                tint = subredditColor(sub),
-                                modifier = Modifier.size(16.dp),
-                            )
-                        } else {
-                            Icon(
-                                Icons.Filled.BookmarkAdd,
-                                contentDescription = "Long-press to pin to history",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(16.dp),
+                                if (isPinned) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
+                                contentDescription = if (isPinned) "Unpin r/$sub" else "Pin r/$sub to history",
+                                tint = if (isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
                             )
                         }
                     }

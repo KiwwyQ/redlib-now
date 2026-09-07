@@ -6,6 +6,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
@@ -36,7 +38,7 @@ fun SearchScreen(
 
     fun open(sub: String) {
         // Bug #6: viewing alone must not auto-subscribe / auto-pin to history.
-        // Long-press a subreddit in the list below to explicitly pin it.
+        // The bookmark button next to each subreddit is the explicit pin action.
         onOpenSubreddit(sub.trim().removePrefix("r/").removePrefix("/r/").lowercase())
     }
 
@@ -123,29 +125,55 @@ fun SearchScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { open(sub) }
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                            .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
                     ) {
                         Icon(Icons.Filled.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                        Text("r/$sub", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(start = 12.dp))
+                        Text("r/$sub", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f).padding(start = 12.dp))
+                        // Bug #6: explicit bookmark button. The suggestion
+                        // list is already filtered to exclude history, so
+                        // this is always "pin" here.
+                        IconButton(
+                            onClick = { togglePin(sub) },
+                            modifier = Modifier.size(36.dp),
+                        ) {
+                            Icon(
+                                Icons.Filled.BookmarkBorder,
+                                contentDescription = "Pin r/$sub to history",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
                     }
                 }
                 if (q.isNotBlank() && !filteredSuggestions.contains(q.lowercase()) && !history.contains(q.lowercase())) {
+                    val target = q.lowercase()
                     item {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clickable { open(q) }
-                                .padding(horizontal = 16.dp, vertical = 8.dp),
+                                .clickable { open(target) }
+                                .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
                         ) {
                             Icon(Icons.Filled.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                             Text(
-                                "Go to r/${q.lowercase()}",
+                                "Go to r/$target",
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(start = 12.dp),
+                                modifier = Modifier.weight(1f).padding(start = 12.dp),
                             )
+                            IconButton(
+                                onClick = { togglePin(target) },
+                                modifier = Modifier.size(36.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.BookmarkBorder,
+                                    contentDescription = "Pin r/$target to history",
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
                         }
                     }
                 }

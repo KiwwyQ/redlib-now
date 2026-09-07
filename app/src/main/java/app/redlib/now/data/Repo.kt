@@ -26,6 +26,10 @@ object Repo {
 
     fun init(context: Context) {
         prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        // Bug #6: load persisted subreddit history on startup so pinned
+        // subreddits survive app restarts (previously historyState stayed
+        // empty until the user added something fresh in this session).
+        historyState = load()
         MediaCache.init(context)
         FeedCache.init(context)
         Settings.init(context)
