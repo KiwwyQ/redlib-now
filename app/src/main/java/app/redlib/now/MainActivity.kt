@@ -42,12 +42,14 @@ class MainActivity : ComponentActivity() {
         incomingLink.value = extractLink(intent)
         Repo.init(applicationContext)
         enableEdgeToEdge()
-        // Immersive: status bar stays hidden while browsing, swipe from the
-        // top edge to bring it back transiently.
+        // Bug #5: keep the status bar visible by default so the user keeps
+        // clock / battery / signal awareness. Only the navigation bar is
+        // left to the system; immersive auto-hide kicks in for fullscreen
+        // media playback from inside MediaViewer.
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            hide(WindowInsetsCompat.Type.statusBars())
+            show(WindowInsetsCompat.Type.statusBars())
         }
         setContent {
             val baseDensity = LocalDensity.current

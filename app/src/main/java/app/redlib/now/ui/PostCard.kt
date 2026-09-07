@@ -107,6 +107,11 @@ fun PostCard(
             // Media preview (tap = full screen). Videos get a centered play
             // button overlay so they're unmistakable.
             if (app.redlib.now.data.Settings.showMedia && post.imageUrl != null && post.externalUrl == null) {
+                // Bug #3: cache the localUri lookup with remember so we
+                // don't hit the filesystem on every recomposition / scroll.
+                val previewUri = remember(post.imageUrl) {
+                    app.redlib.now.data.MediaCache.localUri(post.imageUrl) ?: post.imageUrl
+                }
                 Box(
                     Modifier
                         .fillMaxWidth()
@@ -117,7 +122,7 @@ fun PostCard(
                         },
                 ) {
                     AsyncImage(
-                        model = app.redlib.now.data.MediaCache.localUri(post.imageUrl) ?: post.imageUrl,
+                        model = previewUri,
                         contentDescription = post.title,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxWidth().heightIn(max = if (app.redlib.now.data.Settings.cardSize == "large") 340.dp else if (app.redlib.now.data.Settings.cardSize == "normal") 280.dp else 220.dp),
@@ -177,8 +182,11 @@ fun PostCard(
                         modifier = Modifier.weight(1f).padding(start = 8.dp),
                     )
                     if (post.imageUrl != null) {
+                        val thumbUri = remember(post.imageUrl) {
+                            app.redlib.now.data.MediaCache.localUri(post.imageUrl) ?: post.imageUrl
+                        }
                         AsyncImage(
-                            model = app.redlib.now.data.MediaCache.localUri(post.imageUrl) ?: post.imageUrl,
+                            model = thumbUri,
                             contentDescription = null,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.size(44.dp).clip(RoundedCornerShape(6.dp)),

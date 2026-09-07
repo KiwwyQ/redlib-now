@@ -46,21 +46,27 @@ object Repo {
     // ---- saved posts (local bookmarks) ----
     private val SAVED_KEY = "saved_posts"
     private var savedPostsInternal: List<app.redlib.now.model.Post> = emptyList()
+    // Observable set of saved post IDs so isSaved() is a Compose state read.
+    // Without this, PostCard's bookmark icon never recomposes on toggle.
+    private val savedIdsState = androidx.compose.runtime.mutableStateOf<Set<String>>(emptySet())
     var savedState by androidx.compose.runtime.mutableStateOf<List<app.redlib.now.model.Post>>(emptyList())
         private set
 
     fun loadSaved() {
         savedPostsInternal = FeedCache.loadFeed("_saved_")?.posts ?: emptyList()
         savedState = savedPostsInternal
+        savedIdsState.value = savedPostsInternal.mapTo(LinkedHashSet<String>()) { it.id }
     }
 
-    fun isSaved(id: String): Boolean = savedPostsInternal.any { it.id == id }
+    fun isSaved(id: String): Boolean = id in savedIdsState.value
 
     fun toggleSave(post: app.redlib.now.model.Post) {
-        savedPostsInternal = if (isSaved(post.id)) {
-            savedPostsInternal.filter { it.id != post.id }
+        if (isSaved(post.id)) {
+            savedPostsInternal = savedPostsInternal.filter { it.id != post.id }
+            savedIdsState.value = savedIdsState.value - post.id
         } else {
-            listOf(post) + savedPostsInternal
+            savedPostsInternal = listOf(post) + savedPostsInternal
+            savedIdsState.value = savedIdsState.value + post.id
         }
         savedState = savedPostsInternal
         FeedCache.saveFeed("_saved_", savedPostsInternal)

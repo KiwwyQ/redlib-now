@@ -361,8 +361,11 @@ private fun CommentNode(
             // images render as <figure><img>; image-only comments would
             // otherwise parse to an empty body).
             comment.imageUrl?.let { url ->
+                val imgUri = remember(url) {
+                    app.redlib.now.data.MediaCache.localUri(url) ?: url
+                }
                 coil.compose.AsyncImage(
-                    model = app.redlib.now.data.MediaCache.localUri(url) ?: url,
+                    model = imgUri,
                     contentDescription = null,
                     contentScale = androidx.compose.ui.layout.ContentScale.Fit,
                     modifier = Modifier
@@ -379,8 +382,7 @@ private fun CommentNode(
                 GifClip(id, onOpen = { onOpenMedia(it, true) })
             }
             comment.replies.forEach { CommentNode(it, depth + 1, onLongPress, onOpenMedia) }
-        } else if (replyCount > 0) {
-            Text(
+        } else if (replyCount > 0) {            Text(
                 "$replyCount ${if (replyCount == 1L) "reply" else "replies"} hidden",
                 style = MaterialTheme.typography.labelSmall,
                 fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
