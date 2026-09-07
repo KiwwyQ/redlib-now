@@ -1,29 +1,30 @@
 package app.redlib.now.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.ui.focus.focusRequester
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bookmark
-import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Search
-import androidx.activity.compose.BackHandler
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.redlib.now.data.Repo
 
 /**
- * Subreddit picker: history first (with per-row delete), then suggestions.
- * Confirming a query jumps straight to r/<query>.
+ * Subreddit finder only.
+ *
+ * - Search history = recent lookups (not pinned). Delete forgets the entry only.
+ * - Pin / unpin lives exclusively on the subreddit feed top bar.
+ * - Pinned subs are intentionally omitted here — use the drawer sidebar.
  */
 @Composable
 fun SearchScreen(
@@ -32,29 +33,24 @@ fun SearchScreen(
 ) {
     BackHandler(onBack = onDismiss)
     var query by remember { mutableStateOf("") }
-    var history by remember { mutableStateOf(Repo.history()) }
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
     fun open(sub: String) {
-        // Bug #6: viewing alone must not auto-subscribe / auto-pin to history.
-        // The bookmark button next to each subreddit is the explicit pin action.
-        onOpenSubreddit(sub.trim().removePrefix("r/").removePrefix("/r/").lowercase())
-    }
-
-    fun togglePin(sub: String) {
         val normalized = sub.trim().removePrefix("r/").removePrefix("/r/").lowercase()
         if (normalized.isEmpty()) return
-        if (Repo.history().contains(normalized)) {
-            Repo.remove(normalized)
-        } else {
-            Repo.add(normalized)
-        }
-        history = Repo.history()
+        // Record search history only (never pins).
+        Repo.recordSearch(normalized)
+        onOpenSubreddit(normalized)
     }
 
     val q = query.trim().removePrefix("r/").removePrefix("/r/")
-    val filteredSuggestions = Repo.SUGGESTIONS.filter { it.contains(q, ignoreCase = true) && it !in history }
+    val searchHistory = Repo.searchHistoryState
+    val filteredSuggestions = Repo.SUGGESTIONS.filter {
+        it.contains(q, ignoreCase = true) &&
+            it !in searchHistory &&
+            it !in Repo.pinnedState
+    }
 
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
         Column(Modifier.padding(top = 12.dp)) {
@@ -79,45 +75,57 @@ fun SearchScreen(
             }
 
             LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-                if (history.isNotEmpty()) {
-                    item {
-                        SectionLabel("History")
-                    }
-                    items(history, key = { "h:$it" }) { sub ->
+                if (searchHistory.isNotEmpty()) {
+                    item { SectionLabel("Recent searches") }
+                    items(searchHistory, key = { "h:$it" }) { sub ->
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { open(sub) }
-                                .padding(horizontal = 16.dp, vertical = 2.dp),
+                                .padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
                         ) {
-                            Icon(Icons.Filled.History, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
+                            Icon(
+                                Icons.Filled.History,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(18.dp),
+                            )
                             Text(
                                 "r/$sub",
                                 style = MaterialTheme.typography.bodyLarge,
                                 modifier = Modifier.weight(1f).padding(start = 12.dp),
                             )
-                            IconButton(onClick = {
-                                Repo.remove(sub)
-                                history = Repo.history()
-                            }) {
+                            IconButton(
+                                onClick = { Repo.removeFromSearchHistory(sub) },
+                                modifier = Modifier.size(36.dp),
+                            ) {
                                 Icon(
                                     Icons.Filled.Delete,
-                                    contentDescription = "Remove r/$sub from history",
+                                    contentDescription = "Remove r/$sub from search history",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(18.dp),
                                 )
                             }
                         }
                     }
                 }
-                item { SectionLabel(if (q.isEmpty()) "Browse (type to filter ${Repo.SUGGESTIONS.size} subreddits)" else "Browse") }
+
+                item {
+                    SectionLabel(
+                        if (q.isEmpty()) "Browse (type to filter ${Repo.SUGGESTIONS.size} subreddits)"
+                        else "Browse",
+                    )
+                }
                 if (q.isEmpty()) {
-                    item { Text(
-                        "${Repo.SUGGESTIONS.size} communities — start typing to narrow down, or browse the full grid from the drawer.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp),
-                    ) }
+                    item {
+                        Text(
+                            "${Repo.SUGGESTIONS.size} communities — start typing to narrow down, or browse the full grid from the drawer.",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(horizontal = 16.dp),
+                        )
+                    }
                 }
                 items(filteredSuggestions.take(24), key = { "s:$it" }) { sub ->
                     Row(
@@ -125,27 +133,26 @@ fun SearchScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable { open(sub) }
-                            .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
                     ) {
-                        Icon(Icons.Filled.Search, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
-                        Text("r/$sub", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f).padding(start = 12.dp))
-                        // Bug #6: explicit bookmark button. The suggestion
-                        // list is already filtered to exclude history, so
-                        // this is always "pin" here.
-                        IconButton(
-                            onClick = { togglePin(sub) },
-                            modifier = Modifier.size(36.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.BookmarkBorder,
-                                contentDescription = "Pin r/$sub to history",
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp),
-                            )
-                        }
+                        Icon(
+                            Icons.Filled.Search,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Text(
+                            "r/$sub",
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier.padding(start = 12.dp),
+                        )
                     }
                 }
-                if (q.isNotBlank() && !filteredSuggestions.contains(q.lowercase()) && !history.contains(q.lowercase())) {
+                if (q.isNotBlank() &&
+                    !filteredSuggestions.any { it.equals(q, true) } &&
+                    !searchHistory.any { it.equals(q, true) } &&
+                    !Repo.pinnedState.any { it.equals(q, true) }
+                ) {
                     val target = q.lowercase()
                     item {
                         Row(
@@ -153,27 +160,21 @@ fun SearchScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { open(target) }
-                                .padding(start = 16.dp, end = 4.dp, top = 8.dp, bottom = 8.dp),
+                                .padding(horizontal = 16.dp, vertical = 10.dp),
                         ) {
-                            Icon(Icons.Filled.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
+                            Icon(
+                                Icons.Filled.Search,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(18.dp),
+                            )
                             Text(
                                 "Go to r/$target",
                                 style = MaterialTheme.typography.bodyLarge,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.weight(1f).padding(start = 12.dp),
+                                modifier = Modifier.padding(start = 12.dp),
                             )
-                            IconButton(
-                                onClick = { togglePin(target) },
-                                modifier = Modifier.size(36.dp),
-                            ) {
-                                Icon(
-                                    Icons.Filled.BookmarkBorder,
-                                    contentDescription = "Pin r/$target to history",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp),
-                                )
-                            }
                         }
                     }
                 }

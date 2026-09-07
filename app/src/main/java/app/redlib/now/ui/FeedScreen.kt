@@ -80,9 +80,9 @@ fun FeedScreen(
                     onClick = onOpenSearch,
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                 )
-                // Pinned list only — no per-row unpin (avoids misclicks).
-                // Pin / unpin lives on the subreddit feed top bar.
-                if (Repo.historyState.isNotEmpty()) {
+                // Pinned only — no per-row unpin (avoids misclicks).
+                // Pin / unpin lives exclusively on the subreddit feed top bar.
+                if (Repo.pinnedState.isNotEmpty()) {
                     Text(
                         "Pinned",
                         style = MaterialTheme.typography.labelMedium,
@@ -90,7 +90,7 @@ fun FeedScreen(
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 4.dp),
                     )
                 }
-                Repo.historyState.forEach { sub ->
+                Repo.pinnedState.forEach { sub ->
                     NavigationDrawerItem(
                         label = { Text("r/$sub") },
                         selected = currentFeed == "/r/$sub",
@@ -181,10 +181,10 @@ fun FeedScreen(
                             }
                     }
                     if (subName != null) {
-                        val isPinned = subName in Repo.historyState
+                        val isPinned = Repo.isPinned(subName)
                         IconButton(
                             onClick = {
-                                if (isPinned) Repo.remove(subName) else Repo.add(subName)
+                                if (isPinned) Repo.unpin(subName) else Repo.pin(subName)
                             },
                         ) {
                             Icon(
