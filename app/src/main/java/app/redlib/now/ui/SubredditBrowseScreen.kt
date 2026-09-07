@@ -85,6 +85,7 @@ fun SubredditBrowseScreen(
                             },
                             modifier = Modifier.size(28.dp).padding(top = 2.dp),
                         ) {
+                            Icon(
                                 if (isPinned) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                                 contentDescription = if (isPinned) "Unpin r/$sub" else "Pin r/$sub to history",
                                 tint = if (isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
