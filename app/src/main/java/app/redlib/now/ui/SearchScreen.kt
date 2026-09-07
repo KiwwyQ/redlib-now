@@ -35,8 +35,20 @@ fun SearchScreen(
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
     fun open(sub: String) {
-        Repo.add(sub)
+        // Bug #6: viewing alone must not auto-subscribe / auto-pin to history.
+        // Long-press a subreddit in the list below to explicitly pin it.
         onOpenSubreddit(sub.trim().removePrefix("r/").removePrefix("/r/").lowercase())
+    }
+
+    fun togglePin(sub: String) {
+        val normalized = sub.trim().removePrefix("r/").removePrefix("/r/").lowercase()
+        if (normalized.isEmpty()) return
+        if (Repo.history().contains(normalized)) {
+            Repo.remove(normalized)
+        } else {
+            Repo.add(normalized)
+        }
+        history = Repo.history()
     }
 
     val q = query.trim().removePrefix("r/").removePrefix("/r/")

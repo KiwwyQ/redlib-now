@@ -87,7 +87,8 @@ fun FeedScreen(
                         label = { Text("r/$sub") },
                         selected = currentFeed == "/r/$sub",
                         onClick = {
-                            Repo.add(sub)
+                            // Bug #6: don't auto-re-add to history on click.
+                            // Viewing a subreddit must not auto-subscribe.
                             onOpenFeed("/r/$sub")
                         },
                         badge = {

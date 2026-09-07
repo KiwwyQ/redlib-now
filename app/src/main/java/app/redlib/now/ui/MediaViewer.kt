@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.CircularProgressIndicator
@@ -146,43 +147,82 @@ fun MediaViewer(title: String, imageUrl: String?, videoUrl: String?, isVideo: Bo
         val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
         val scope = rememberCoroutineScope()
         var statusMsg by remember { mutableStateOf<String?>(null) }
-        Row(
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
+        var saving by remember { mutableStateOf(false) }
+        // Bug #4: keep the action row inside the safe area so it stays
+        // reachable on Android devices with gesture / 3-button nav bars.
+        Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
+                .navigationBarsPadding()
                 .background(Color.Black.copy(alpha = 0.55f))
                 .padding(vertical = 6.dp),
         ) {
-            TextButton(onClick = {
-                val url = absoluteUrl(imageUrl)
-                scope.launch {
-                    MediaCache.getOrDownload(url)?.let { f ->
-                        shareMedia(context, f, isVideo)
-                    } ?: run { statusMsg = "Nothing to share yet" }
+            statusMsg?.let {
+                Text(
+                    it,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                )
+            }
+            Row(
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                TextButton(
+                    onClick = {
+                        val url = absoluteUrl(imageUrl)
+                        scope.launch {
+                            // Bug #1: for videos, download+remux so the saved
+                            // file is a real progressive MP4 with duration.
+                            val f = if (isVideo)
+                                MediaCache.videoReadyCopy(url) { /* no progress in dialog */ }
+                            else
+                                MediaCache.getOrDownload(url)
+                            f?.let { shareMedia(context, it, isVideo) }
+                                ?: run { statusMsg = "Nothing to share yet" }
+                        }
+                    },
+                ) { Text("Share", color = Color.White) }
+                TextButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(absoluteUrl(imageUrl)))
+                    statusMsg = "Link copied"
+                }) { Text("Copy link", color = Color.White) }
+                TextButton(
+                    enabled = !saving,
+                    onClick = {
+                        val url = absoluteUrl(imageUrl)
+                        saving = true
+                        scope.launch {
+                            // Bug #1: for videos, ensure we have a remuxed
+                            // .r.mp4 with a proper moov atom (duration),
+                            // not the raw DASH/fMP4 download which saves
+                            // as a 0:00 unplayable file.
+                            val f = if (isVideo) {
+                                MediaCache.videoReadyCopy(url) { /* no progress in dialog */ }
+                            } else {
+                                MediaCache.getOrDownload(url)
+                            }
+                            if (f != null) {
+                                statusMsg = if (saveToGallery(context, f, isVideo))
+                                    "Saved to gallery" else "Save failed"
+                            } else {
+                                statusMsg = "Nothing to save yet"
+                            }
+                            saving = false
+                        }
+                    },
+                ) {
+                    Text(
+                        if (saving) "Saving…" else "Save",
+                        color = Color.White,
+                    )
                 }
-            }) { Text("Share", color = Color.White) }
-            TextButton(onClick = {
-                clipboard.setText(androidx.compose.ui.text.AnnotatedString(absoluteUrl(imageUrl)))
-                statusMsg = "Link copied"
-            }) { Text("Copy link", color = Color.White) }
-            TextButton(onClick = {
-                val url = absoluteUrl(imageUrl)
-                scope.launch {
-                    MediaCache.getOrDownload(url)?.let { f ->
-                        statusMsg = if (saveToGallery(context, f, isVideo)) "Saved to gallery" else "Save failed"
-                    } ?: run { statusMsg = "Nothing to save yet" }
-                }
-            }) { Text("Save", color = Color.White) }
-        }
-        statusMsg?.let {
-            Text(
-                it,
-                color = Color.White,
-                style = MaterialTheme.typography.labelMedium,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 60.dp),
-            )
+            }
         }
     }
 }
@@ -233,7 +273,8 @@ private fun saveToGallery(context: android.content.Context, file: File, isVideo:
 @Composable
 internal fun ZoomableImage(url: String, onClose: () -> Unit = {}) {
     // Serve the local copy when we have it; fetch one for offline otherwise.
-    val model = MediaCache.localUri(url) ?: url
+    // Bug #3: cache the localUri lookup with remember.
+    val model = remember(url) { MediaCache.localUri(url) ?: url }
     LaunchedEffect(url) { if (MediaCache.localUri(url) == null) MediaCache.getOrDownload(url) }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }

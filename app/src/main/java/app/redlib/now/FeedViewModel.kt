@@ -58,6 +58,11 @@ class FeedViewModel : ViewModel() {
     fun load(path: String, initial: Boolean = false) {
         currentPath = path
 
+        // Bug #6: viewing a subreddit must NOT auto-subscribe / auto-add it
+        // to history. The user can explicitly pin via long-press in browse.
+        // Subreddits are only auto-recorded when the user explicitly opts
+        // in (pin from browse / search history).
+
         // Serve the 72h offline copy instantly when we have one.
         val cached = FeedCache.loadFeed(path)
         if (cached != null) {
@@ -84,7 +89,10 @@ class FeedViewModel : ViewModel() {
                     instanceStatus = "served by ${response.baseUrl.removePrefix("https://")}",
                 )
                 FeedCache.saveFeed(path, posts)
-                MediaCache.prefetch(posts)
+                // Bug #3: only prefetch when the cached copy didn't already
+                // satisfy the screen — skips redundant image work on refresh
+                // and on returning to a feed we just looked at.
+                if (cached == null) MediaCache.prefetch(posts)
             } catch (e: Exception) {
                 if (cached != null) {
                     // Offline: keep showing the cached feed.

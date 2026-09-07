@@ -162,22 +162,36 @@ object MediaCache {
                 indexMap[i] = mux.addTrack(fmt)
             }
         }
+        if (indexMap.isEmpty()) {
+            mux.release(); ex.release()
+            Logd.w("remux: no video/audio tracks in source")
+            return false
+        }
         val buf = ByteBuffer.allocate(2 * 1024 * 1024)
         val info = MediaCodec.BufferInfo()
         mux.start()
+        var samplesWritten = 0
         while (true) {
             val trackIdx = ex.sampleTrackIndex
             if (trackIdx < 0) break
-            info.offset = 0
+            buf.clear()
             info.size = ex.readSampleData(buf, 0)
             if (info.size < 0) break
+            info.offset = 0
             info.presentationTimeUs = ex.sampleTime
             info.flags = ex.sampleFlags
+            buf.flip()
             indexMap[trackIdx]?.let { mux.writeSampleData(it, buf, info) }
+            samplesWritten++
             if (!ex.advance()) break
         }
         mux.stop(); mux.release(); ex.release()
-        Logd.i("remux ok: ${dst.name} (${dst.length()} bytes)")
+        if (samplesWritten == 0 || dst.length() < 1024) {
+            Logd.w("remux: produced empty/too-small output (samples=$samplesWritten, size=${dst.length()})")
+            dst.delete()
+            return false
+        }
+        Logd.i("remux ok: ${dst.name} (${dst.length()} bytes, $samplesWritten samples)")
         true
     } catch (t: Throwable) {
         Logd.e("remux failed", t)
