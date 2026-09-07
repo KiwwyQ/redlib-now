@@ -149,54 +149,56 @@ object MediaCache {
     } catch (_: Exception) { null }
 
     /** Copy all A/V samples into a fresh, boring, maximally-compatible MP4. */
-    private fun remux(src: File, dst: File): Boolean = try {
-        val ex = MediaExtractor()
-        ex.setDataSource(src.absolutePath)
-        val mux = MediaMuxer(dst.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-        val indexMap = HashMap<Int, Int>()
-        for (i in 0 until ex.trackCount) {
-            val fmt: MediaFormat = ex.getTrackFormat(i)
-            val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
-            if (mime.startsWith("video/") || mime.startsWith("audio/")) {
-                ex.selectTrack(i)
-                indexMap[i] = mux.addTrack(fmt)
+    private fun remux(src: File, dst: File): Boolean {
+        try {
+            val ex = MediaExtractor()
+            ex.setDataSource(src.absolutePath)
+            val mux = MediaMuxer(dst.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+            val indexMap = HashMap<Int, Int>()
+            for (i in 0 until ex.trackCount) {
+                val fmt: MediaFormat = ex.getTrackFormat(i)
+                val mime = fmt.getString(MediaFormat.KEY_MIME) ?: continue
+                if (mime.startsWith("video/") || mime.startsWith("audio/")) {
+                    ex.selectTrack(i)
+                    indexMap[i] = mux.addTrack(fmt)
+                }
             }
-        }
-        if (indexMap.isEmpty()) {
-            mux.release(); ex.release()
-            Logd.w("remux: no video/audio tracks in source")
-            return false
-        }
-        val buf = ByteBuffer.allocate(2 * 1024 * 1024)
-        val info = MediaCodec.BufferInfo()
-        mux.start()
-        var samplesWritten = 0
-        while (true) {
-            val trackIdx = ex.sampleTrackIndex
-            if (trackIdx < 0) break
-            buf.clear()
-            info.size = ex.readSampleData(buf, 0)
-            if (info.size < 0) break
-            info.offset = 0
-            info.presentationTimeUs = ex.sampleTime
-            info.flags = ex.sampleFlags
-            buf.flip()
-            indexMap[trackIdx]?.let { mux.writeSampleData(it, buf, info) }
-            samplesWritten++
-            if (!ex.advance()) break
-        }
-        mux.stop(); mux.release(); ex.release()
-        if (samplesWritten == 0 || dst.length() < 1024) {
-            Logd.w("remux: produced empty/too-small output (samples=$samplesWritten, size=${dst.length()})")
+            if (indexMap.isEmpty()) {
+                mux.release(); ex.release()
+                Logd.w("remux: no video/audio tracks in source")
+                return false
+            }
+            val buf = ByteBuffer.allocate(2 * 1024 * 1024)
+            val info = MediaCodec.BufferInfo()
+            mux.start()
+            var samplesWritten = 0
+            while (true) {
+                val trackIdx = ex.sampleTrackIndex
+                if (trackIdx < 0) break
+                buf.clear()
+                info.size = ex.readSampleData(buf, 0)
+                if (info.size < 0) break
+                info.offset = 0
+                info.presentationTimeUs = ex.sampleTime
+                info.flags = ex.sampleFlags
+                buf.flip()
+                indexMap[trackIdx]?.let { mux.writeSampleData(it, buf, info) }
+                samplesWritten++
+                if (!ex.advance()) break
+            }
+            mux.stop(); mux.release(); ex.release()
+            if (samplesWritten == 0 || dst.length() < 1024) {
+                Logd.w("remux: produced empty/too-small output (samples=$samplesWritten, size=${dst.length()})")
+                dst.delete()
+                return false
+            }
+            Logd.i("remux ok: ${dst.name} (${dst.length()} bytes, $samplesWritten samples)")
+            true
+        } catch (t: Throwable) {
+            Logd.e("remux failed", t)
             dst.delete()
-            return false
+            false
         }
-        Logd.i("remux ok: ${dst.name} (${dst.length()} bytes, $samplesWritten samples)")
-        true
-    } catch (t: Throwable) {
-        Logd.e("remux failed", t)
-        dst.delete()
-        false
     }
 
     /** Human-readable age for the drawer status line. */

@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyColumn
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -76,21 +77,14 @@ fun SubredditBrowseScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        // Bug #6: explicit bookmark icon button instead of
-                        // long-press. Filled = pinned, outlined = not pinned.
-                         Modifier.pointerInput(Unit) { gestureDetect ->
-                             when (gestureDetected) {
-                                 PointerEvent.Contact -> {
-                                     if (isPinned) {
-                                         Repo.remove(sub)
-                                     } else {
-                                         Repo.add(sub)
-                                     }
-                                }
-                                else -> {}
-                            }
-                        }.onClick = { /* no-op */ }
-                            Icon(
+// Bug #6: explicit bookmark icon button with long-press. Filled = pinned, outlined = not pinned.
+                        IconButton(
+                            onClick = { /* no-op - use long press */ },
+                            onLongClick = {
+                                if (isPinned) Repo.remove(sub) else Repo.add(sub)
+                            },
+                            modifier = Modifier.size(28.dp).padding(top = 2.dp),
+                        ) {
                                 if (isPinned) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                                 contentDescription = if (isPinned) "Unpin r/$sub" else "Pin r/$sub to history",
                                 tint = if (isPinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -124,9 +118,10 @@ fun SubredditBrowseScreen(
                             textAlign = TextAlign.Start,
                             modifier = Modifier.weight(1f),
                         )
-                        // Bug #6: explicit bookmark icon button.
+                        // Bug #6: explicit bookmark icon button with long-press.
                         IconButton(
-                            onClick = {
+                            onClick = { /* no-op - use long press */ },
+                            onLongClick = {
                                 if (isPinned) Repo.remove(sub) else Repo.add(sub)
                             },
                             modifier = Modifier.size(36.dp),
