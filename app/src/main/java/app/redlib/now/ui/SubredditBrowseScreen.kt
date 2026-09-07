@@ -78,12 +78,18 @@ fun SubredditBrowseScreen(
                         )
                         // Bug #6: explicit bookmark icon button instead of
                         // long-press. Filled = pinned, outlined = not pinned.
-                        IconButton(
-                            onClick = {
-                                if (isPinned) Repo.remove(sub) else Repo.add(sub)
-                            },
-                            modifier = Modifier.size(28.dp).padding(top = 2.dp),
-                        ) {
+                         Modifier.pointerInput(Unit) { gestureDetect ->
+                             when (gestureDetected) {
+                                 PointerEvent.Contact -> {
+                                     if (isPinned) {
+                                         Repo.remove(sub)
+                                     } else {
+                                         Repo.add(sub)
+                                     }
+                                }
+                                else -> {}
+                            }
+                        }.onClick = { /* no-op */ }
                             Icon(
                                 if (isPinned) Icons.Filled.Bookmark else Icons.Filled.BookmarkBorder,
                                 contentDescription = if (isPinned) "Unpin r/$sub" else "Pin r/$sub to history",
