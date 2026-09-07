@@ -193,11 +193,11 @@ object MediaCache {
                 return false
             }
             Logd.i("remux ok: ${dst.name} (${dst.length()} bytes, $samplesWritten samples)")
-            true
+            return true
         } catch (t: Throwable) {
             Logd.e("remux failed", t)
             dst.delete()
-            false
+            return false
         }
     }
 
