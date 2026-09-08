@@ -200,7 +200,11 @@ private fun InstanceRow(
             .padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
         RadioButton(selected = selected, onClick = onClick)
-        Column(Modifier = Modifier.weight(1f).padding(start = 4.dp)) {
+        Column(
+            Modifier
+                .weight(1f)
+                .padding(start = 4.dp),
+        ) {
             Text(label, style = MaterialTheme.typography.bodyLarge)
             if (!subtitle.isNullOrBlank()) {
                 Text(
