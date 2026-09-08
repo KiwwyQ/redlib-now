@@ -98,8 +98,14 @@ class MainActivity : ComponentActivity() {
                             showSaved = false
                             if (post.isGallery || post.imageUrl == null || post.externalUrl != null) commentsPost = post else viewerPost = post
                         },
-                        onOpenComments = { commentsPost = it },
-                        onOpenMedia = { viewerPost = it },
+                        onOpenComments = {
+                            showSaved = false
+                            commentsPost = it
+                        },
+                        onOpenMedia = {
+                            showSaved = false
+                            viewerPost = it
+                        },
                     )
                     showBrowse -> SubredditBrowseScreen(
                         onBack = { showBrowse = false },
