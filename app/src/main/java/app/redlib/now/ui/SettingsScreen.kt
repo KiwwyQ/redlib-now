@@ -1,23 +1,32 @@
 package app.redlib.now.ui
 
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import app.redlib.now.data.Repo
 import app.redlib.now.data.Settings
+import app.redlib.now.net.Http
+import app.redlib.now.net.InstanceDiscovery
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import okhttp3.Request
 
-/** Settings screen: Appearance / Behaviour / Filters / Gestures. */
+/** Settings screen: Appearance / Behaviour / Filters / Gestures / Instance. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(onBack: () -> Unit) {
@@ -36,6 +45,9 @@ fun SettingsScreen(onBack: () -> Unit) {
             title = { Text("Settings", fontWeight = FontWeight.Bold) },
         )
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+            item { Section("Instance") }
+            item { InstancePicker() }
+
             item { Section("Appearance") }
             item {
                 ChoiceRow("Card size", Settings.cardSize, listOf("compact" to "Compact", "normal" to "Normal", "large" to "Large")) {
@@ -77,6 +89,179 @@ fun SettingsScreen(onBack: () -> Unit) {
             item { SwitchRow("Tap to close images & videos", Settings.tapToCloseImages) { Settings.updateTapToClose(it) } }
         }
     }
+    }
+}
+
+private enum class InstanceStatus { Checking, Up, Challenge, Down }
+
+@Composable
+private fun InstancePicker() {
+    val scope = rememberCoroutineScope()
+    var instances by remember { mutableStateOf<List<String>>(emptyList()) }
+    var statuses by remember { mutableStateOf<Map<String, InstanceStatus>>(emptyMap()) }
+    var loadingList by remember { mutableStateOf(true) }
+    val preferred = Settings.preferredInstance
+    val auto = Settings.isAutoInstance()
+    val active = Repo.client.activeBase()
+
+    fun refreshListAndProbe() {
+        scope.launch {
+            loadingList = true
+            val urls = withContext(Dispatchers.IO) {
+                try {
+                    InstanceDiscovery.fetchInstanceUrls()
+                } catch (_: Throwable) {
+                    InstanceDiscovery.FALLBACK
+                }
+            }
+            instances = urls
+            loadingList = false
+            // Probe in parallel-ish sequential to avoid hammering
+            val map = statuses.toMutableMap()
+            urls.forEach { map[it] = InstanceStatus.Checking }
+            statuses = map.toMap()
+            for (url in urls) {
+                val st = withContext(Dispatchers.IO) { probeInstance(url) }
+                map[url] = st
+                statuses = map.toMap()
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { refreshListAndProbe() }
+
+    Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
+        Text(
+            "Auto picks the first healthy host from the live public list. Pinning sticks to one host until you change it.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+        ) {
+            Text(
+                if (loadingList) "Loading instance list…" else "${instances.size} instances",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.weight(1f).padding(start = 8.dp),
+            )
+            IconButton(onClick = { refreshListAndProbe() }) {
+                Icon(Icons.Filled.Refresh, contentDescription = "Refresh instance status")
+            }
+        }
+
+        // Auto option
+        InstanceRow(
+            label = "Auto",
+            subtitle = active?.removePrefix("https://")?.let { "currently $it" } ?: "rotate across healthy hosts",
+            selected = auto,
+            status = if (auto) InstanceStatus.Up else null,
+            onClick = {
+                Settings.updatePreferredInstance("")
+                Repo.client.applyPreferredFromSettings()
+            },
+        )
+
+        instances.forEach { url ->
+            val host = url.removePrefix("https://").removePrefix("http://")
+            InstanceRow(
+                label = host,
+                subtitle = when {
+                    !auto && preferred == url -> "pinned"
+                    active == url -> "in use"
+                    else -> null
+                },
+                selected = !auto && preferred == url,
+                status = statuses[url] ?: InstanceStatus.Checking,
+                onClick = {
+                    Settings.updatePreferredInstance(url)
+                    Repo.client.applyPreferredFromSettings()
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun InstanceRow(
+    label: String,
+    subtitle: String?,
+    selected: Boolean,
+    status: InstanceStatus?,
+    onClick: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        RadioButton(selected = selected, onClick = onClick)
+        Column(Modifier = Modifier.weight(1f).padding(start = 4.dp)) {
+            Text(label, style = MaterialTheme.typography.bodyLarge)
+            if (!subtitle.isNullOrBlank()) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (status != null) {
+            StatusDot(status)
+        }
+    }
+}
+
+@Composable
+private fun StatusDot(status: InstanceStatus) {
+    val color = when (status) {
+        InstanceStatus.Checking -> Color(0xFF9E9E9E)
+        InstanceStatus.Up -> Color(0xFF4CAF50)
+        InstanceStatus.Challenge -> Color(0xFFFFC107) // reachable, needs Anubis
+        InstanceStatus.Down -> Color(0xFFF44336)
+    }
+    val desc = when (status) {
+        InstanceStatus.Checking -> "checking"
+        InstanceStatus.Up -> "up"
+        InstanceStatus.Challenge -> "reachable"
+        InstanceStatus.Down -> "down"
+    }
+    Box(
+        Modifier
+            .size(12.dp)
+            .clip(CircleShape)
+            .background(color),
+    )
+    Spacer(Modifier.width(6.dp))
+    Text(desc, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/**
+ * Lightweight reachability probe — does not fully solve Anubis.
+ * Up = got real Redlib content; Challenge = Anubis interstitial (host is alive);
+ * Down = network/HTTP failure.
+ */
+private fun probeInstance(base: String): InstanceStatus {
+    return try {
+        val url = base.trimEnd('/') + "/"
+        val req = Request.Builder().url(url).get().header("User-Agent", "NowRedlib/1.0").build()
+        Http.client.newCall(req).execute().use { resp ->
+            val body = resp.body?.string().orEmpty()
+            when {
+                body.contains("post_title") || body.contains("id=\"posts\"") -> InstanceStatus.Up
+                body.contains("anubis_challenge") ||
+                    body.contains("Making sure you") ||
+                    body.contains("Verifying your browser") -> InstanceStatus.Challenge
+                resp.isSuccessful -> InstanceStatus.Up
+                else -> InstanceStatus.Down
+            }
+        }
+    } catch (_: Throwable) {
+        InstanceStatus.Down
     }
 }
 
