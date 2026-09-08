@@ -9,7 +9,8 @@ import java.util.concurrent.atomic.AtomicReference
  * Fetches Redlib pages, transparently handling:
  *  - Anubis proof-of-work challenges (solved on-device, cookie cached),
  *  - load-balancer meta-refresh redirects between instance backends,
- *  - instance rotation when an instance is unreachable or refuses us (403).
+ *  - instance rotation when an instance is unreachable or refuses us (403),
+ *  - optional user-pinned instance from [app.redlib.now.data.Settings.preferredInstance].
  *
  * Every step is logged under the "NowRedlib" logcat tag.
  */
@@ -21,12 +22,35 @@ class RedlibClient(
     private val currentBase = AtomicReference<String?>(null)
     private var allInstances: List<String> = emptyList()
 
+    /** Currently selected base URL, if any (after warm-up / last successful fetch). */
+    fun activeBase(): String? = currentBase.get()
+
+    /**
+     * Apply a Settings change immediately: clear sticky base so the next
+     * fetch re-warms against Auto or the pinned URL.
+     */
+    fun applyPreferredFromSettings() {
+        currentBase.set(null)
+    }
+
+    private fun pinnedFromSettings(): String? {
+        val p = app.redlib.now.data.Settings.preferredInstance.trim().removeSuffix("/")
+        return if (p.isBlank() || p.equals("auto", ignoreCase = true)) null else p
+    }
+
     /** Health-check instances and pick the first one that serves real posts. */
     suspend fun warmUp(): String? = withContext(Dispatchers.IO) {
         allInstances = instancesProvider()
-        Logd.i("warmUp: ${allInstances.size} candidate instances: $allInstances")
+        val pinned = pinnedFromSettings()
+        val order = if (pinned != null) {
+            // User pinned a host: try it first, then the rest as emergency fallbacks.
+            (listOf(pinned) + allInstances).distinct()
+        } else {
+            allInstances
+        }
+        Logd.i("warmUp: ${order.size} candidates (pinned=$pinned): $order")
         val failures = mutableListOf<String>()
-        for (candidate in allInstances) {
+        for (candidate in order) {
             try {
                 Logd.i("warmUp: trying $candidate ...")
                 val resp = fetchInternal(candidate, "/r/popular")
@@ -41,15 +65,28 @@ class RedlibClient(
                 Logd.e("warmUp: $candidate failed: ${t.message}", t)
                 failures += "$candidate: ${t.message}"
             }
+            // Strict pin: do not silently roam if the user forced this host.
+            if (pinned != null && candidate == pinned) {
+                Logd.e("warmUp: pinned instance $pinned failed; not auto-rotating")
+                break
+            }
         }
         Logd.e("warmUp: ALL instances failed:\n${failures.joinToString("\n")}")
         null
     }
 
     suspend fun fetch(path: String): Response = withContext(Dispatchers.IO) {
+        val pinned = pinnedFromSettings()
         val tried = mutableListOf<String>()
-        var base: String = currentBase.get() ?: warmUp()
+        var base: String = currentBase.get()
+            ?: pinned
+            ?: warmUp()
             ?: throw Exception("No working Redlib instance found")
+        // If pinned and current base drifted (e.g. old session), snap back.
+        if (pinned != null && base != pinned && !base.startsWith(pinned)) {
+            base = pinned
+            currentBase.set(pinned)
+        }
         while (true) {
             try {
                 Logd.i("fetch: GET $base$path")
@@ -63,6 +100,10 @@ class RedlibClient(
             } catch (e: InstanceDeadException) {
                 Logd.w("fetch: $base is dead (${e.cause?.message}), rotating...")
                 tried += base
+                if (pinned != null) {
+                    // User asked for a specific host — surface the failure instead of hopping away.
+                    throw Exception("Pinned instance $pinned is unreachable", e)
+                }
                 allInstances = (allInstances + InstanceDiscovery.FALLBACK).distinct()
                 val next = allInstances.firstOrNull { it !in tried }
                     ?: throw Exception("All Redlib instances failed", e)
