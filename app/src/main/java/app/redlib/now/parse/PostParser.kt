@@ -41,10 +41,21 @@ object PostParser {
             val video = media.selectFirst("video")
             if (video != null) {
                 isVideo = true
-                imageUrl = absolutize(video.attr("poster"), baseUrl)
-                val src = video.selectFirst("source")?.attr("src")?.ifEmpty { null }
-                    ?: video.attr("src").ifEmpty { null }
-                videoUrl = src?.let { absolutize(it, baseUrl) }
+                val poster = video.attr("poster").ifEmpty { null }
+                if (poster != null) imageUrl = absolutize(poster, baseUrl)
+                // Prefer first non-empty <source>. With HLS on, Redlib often
+                // emits m3u8 first and an empty mp4 second — skip blanks.
+                // Prefer HLS/m3u8 so MediaCache can resolve CMAF video+audio.
+                val sources = video.select("source")
+                    .map { it.attr("src").trim() to (it.attr("type") ?: "") }
+                    .filter { it.first.isNotEmpty() }
+                val preferred = sources.firstOrNull { (src, type) ->
+                    type.contains("mpegurl", ignoreCase = true) ||
+                        src.contains(".m3u8", ignoreCase = true)
+                }?.first
+                    ?: sources.firstOrNull()?.first
+                    ?: video.attr("src").trim().ifEmpty { null }
+                videoUrl = preferred?.let { absolutize(it, baseUrl) }
             } else {
                 val svgImg = media.selectFirst("svg image")?.attr("href")?.ifEmpty { null }
                     ?: media.selectFirst("svg image")?.attr("src")?.ifEmpty { null }
