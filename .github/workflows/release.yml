@@ -23,7 +23,14 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
+      - name: Verify persistent debug keystore
+        run: |
+          test -f keystore/debug.keystore
+          keytool -list -keystore keystore/debug.keystore -storepass android -alias redlibnow
+
       - name: Build APK
+        # assembleDebug uses the persistent in-repo keystore so successive
+        # releases can update over previous installs without wiping app data.
         run: ./gradlew assembleDebug --no-daemon
 
       - name: Rename APK
