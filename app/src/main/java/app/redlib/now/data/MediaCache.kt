@@ -108,38 +108,82 @@ object MediaCache {
      * Full video pipeline: download -> remux to clean MP4 -> local file.
      * Falls back to the raw download if remuxing fails; returns null only
      * if we could not get the video at all.
+     *
+     * Redlib video sources are typically:
+     *  - /hls/<id>/HLSPlaylist.m3u8  (HLS master; segments point at progressive MP4s)
+     *  - /vid/<id>/<size>            (proxies to DASH_<size> or CMAF_<size>)
+     *  - direct .mp4 (including redgifs proxies when the instance embeds them)
+     * We try several progressive candidates (CMAF then DASH, 480 then 720)
+     * because older/newer instances and rich:video posts differ.
      */
     suspend fun videoReadyCopy(url0: String, onProgress: (Int?) -> Unit): File? =
         withContext(Dispatchers.IO) {
-            // Reddit's HLS master is unusable for us; the byterange segments
-            // it references are ranges of one real progressive MP4 per
-            // quality, served by the instance. Fetch that directly.
-            val url = if (url0.contains("/HLSPlaylist.m3u8")) {
-                url0.substringBefore("HLSPlaylist.m3u8") + "CMAF_480.mp4"
-            } else url0
-            val existing = fileFor(url, ".r.mp4")
-            if (existing.length() > 0L) { onProgress(100); return@withContext existing }
-
-            val raw = fileFor(url, extOf(url))
-            if (raw.length() == 0L) {
-                val head = headContentLength(url)
-                if (head != null && head > MAX_VIDEO_BYTES) {
-                    Logd.w("video too large ($head bytes), streaming instead: $url")
-                    return@withContext null
+            val candidates = progressiveVideoCandidates(url0)
+            for (url in candidates) {
+                val existing = fileFor(url, ".r.mp4")
+                if (existing.length() > 0L) {
+                    onProgress(100)
+                    return@withContext existing
                 }
-                getOrDownload(url, onProgress) ?: return@withContext null
             }
-            // Distinct name from raw — muxer and extractor cannot share a path.
-            val remuxed = File(dir, md5(url) + ".r.mp4")
-            if (remux(raw, remuxed)) {
-                raw.delete()
-                onProgress(100)
-                remuxed
-            } else {
-                Logd.w("remux failed; playing raw download")
-                raw
+            var lastRaw: File? = null
+            for (url in candidates) {
+                Logd.i("video try: $url")
+                val raw = fileFor(url, extOf(url))
+                if (raw.length() == 0L) {
+                    val head = headContentLength(url)
+                    if (head != null && head > MAX_VIDEO_BYTES) {
+                        Logd.w("video too large ($head bytes), skip: $url")
+                        continue
+                    }
+                    if (getOrDownload(url, onProgress) == null) continue
+                }
+                if (raw.length() == 0L) continue
+                // Distinct name from raw — muxer and extractor cannot share a path.
+                val remuxed = File(dir, md5(url) + ".r.mp4")
+                if (remux(raw, remuxed)) {
+                    raw.delete()
+                    onProgress(100)
+                    return@withContext remuxed
+                }
+                Logd.w("remux failed for $url; keep raw as fallback")
+                lastRaw = raw
             }
+            lastRaw?.also { onProgress(100) }
         }
+
+    /**
+     * Build ordered list of progressive MP4 URLs to try for a given video URL
+     * from the Redlib HTML (HLS playlist, /vid/ proxy, or already-mp4).
+     */
+    private fun progressiveVideoCandidates(url0: String): List<String> {
+        val out = linkedSetOf<String>()
+        when {
+            // HLS master: /hls/<id>/HLSPlaylist.m3u8  →  try CMAF_ then DASH_ qualities
+            url0.contains("HLSPlaylist.m3u8", ignoreCase = true) -> {
+                val base = url0.substringBefore("HLSPlaylist.m3u8", url0)
+                for (q in listOf("480", "720", "360", "1080")) {
+                    out += base + "CMAF_$q.mp4"
+                    out += base + "DASH_$q.mp4"
+                }
+            }
+            // /vid/<id>/<size> or /vid/<id>/DASH_xx  → expand qualities
+            Regex("""/vid/[^/]+/""", RegexOption.IGNORE_CASE).containsMatchIn(url0) -> {
+                val base = url0.replace(Regex("""/(?:DASH_|CMAF_)?\d+(?:\.mp4)?$""", RegexOption.IGNORE_CASE), "/")
+                for (q in listOf("480", "720", "360", "1080")) {
+                    out += base + "CMAF_$q.mp4"
+                    out += base + "DASH_$q.mp4"
+                    out += base + q  // some proxies use bare size
+                }
+                out += url0
+            }
+            // Already a progressive file (mp4, or redgifs-style proxy)
+            else -> out += url0
+        }
+        // Always keep original as last resort (e.g. non-HLS mp4 source tag)
+        out += url0
+        return out.toList()
+    }
 
     private fun headContentLength(url: String): Long? = try {
         val req = okhttp3.Request.Builder().url(url).head().build()
