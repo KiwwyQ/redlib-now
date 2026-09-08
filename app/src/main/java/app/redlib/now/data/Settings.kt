@@ -40,6 +40,11 @@ object Settings {
     var swipeBack by mutableStateOf(true)
     var tapToCloseImages by mutableStateOf(true)
 
+    // ---- Instance ----
+    // Empty / "auto" = rotate across the live instance list (existing behaviour).
+    // Otherwise a full https://... URL the user pinned from Settings.
+    var preferredInstance by mutableStateOf("")
+
     fun init(context: Context) {
         prefs = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
         cardSize = prefs.getString("card_size", "compact") ?: "compact"
@@ -60,6 +65,7 @@ object Settings {
         keywordFilters = prefs.getString("filter_keywords", "")!!.split(",").filter { it.isNotBlank() }
         swipeBack = prefs.getBoolean("swipe_back", true)
         tapToCloseImages = prefs.getBoolean("tap_to_close", true)
+        preferredInstance = prefs.getString("preferred_instance", "") ?: ""
     }
 
     private fun put(key: String, value: Any?) {
@@ -89,6 +95,15 @@ object Settings {
     fun updateHideNsfwPreviews(v: Boolean) { hideNsfwPreviews = v; put("hide_nsfw_previews", v) }
     fun updateSwipeBack(v: Boolean) { swipeBack = v; put("swipe_back", v) }
     fun updateTapToClose(v: Boolean) { tapToCloseImages = v; put("tap_to_close", v) }
+
+    /** "" or "auto" = automatic rotation; otherwise a concrete instance base URL. */
+    fun updatePreferredInstance(v: String) {
+        preferredInstance = v.trim().removeSuffix("/")
+        put("preferred_instance", preferredInstance)
+    }
+
+    fun isAutoInstance(): Boolean =
+        preferredInstance.isBlank() || preferredInstance.equals("auto", ignoreCase = true)
 
     fun updateSubredditFilters(list: List<String>) { subredditFilters = list; put("filter_subs", list) }
     fun updateUserFilters(list: List<String>) { userFilters = list; put("filter_users", list) }
