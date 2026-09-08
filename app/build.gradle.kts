@@ -16,9 +16,27 @@ android {
         versionName = "2026.08.31"
     }
 
+    // Persistent debug keystore so CI/local assembleDebug APKs share the same
+    // signing cert and can update in place (saved posts, settings survive).
+    // Keystore lives in-repo at keystore/debug.keystore (password: android).
+    signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("keystore/debug.keystore")
+            storePassword = "android"
+            keyAlias = "redlibnow"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
         release {
             isMinifyEnabled = false
+            // Release builds in CI currently ship the same debug-signed APK;
+            // keep the persistent cert so tag releases also update in place.
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {
