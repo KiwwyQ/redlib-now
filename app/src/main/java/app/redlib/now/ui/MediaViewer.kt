@@ -91,7 +91,15 @@ fun MediaViewer(title: String, imageUrl: String?, videoUrl: String?, isVideo: Bo
         if (isVideo) {
             val vf = videoFile
             if (vf != null) {
-                VideoPlayer(android.net.Uri.fromFile(vf).toString(), Modifier.fillMaxSize())
+                // Leave room at the bottom for the action panel + system nav
+                // so ExoPlayer's seek bar / controls are not covered.
+                VideoPlayer(
+                    android.net.Uri.fromFile(vf).toString(),
+                    Modifier
+                        .fillMaxSize()
+                        .padding(bottom = 56.dp)
+                        .navigationBarsPadding(),
+                )
             } else {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -163,6 +171,7 @@ fun MediaViewer(title: String, imageUrl: String?, videoUrl: String?, isVideo: Bo
                     it,
                     color = Color.White,
                     style = MaterialTheme.typography.labelSmall,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 12.dp, vertical = 2.dp),
@@ -175,9 +184,9 @@ fun MediaViewer(title: String, imageUrl: String?, videoUrl: String?, isVideo: Bo
             ) {
                 TextButton(
                     onClick = {
-                        val url = absoluteUrl(imageUrl)
+                        val url = absoluteUrl(if (isVideo) videoUrl ?: imageUrl else imageUrl)
                         scope.launch {
-                            // Bug #1: for videos, download+remux so the saved
+                            // For videos, download+remux so the shared
                             // file is a real progressive MP4 with duration.
                             val f = if (isVideo)
                                 MediaCache.videoReadyCopy(url) { /* no progress in dialog */ }
@@ -189,16 +198,18 @@ fun MediaViewer(title: String, imageUrl: String?, videoUrl: String?, isVideo: Bo
                     },
                 ) { Text("Share", color = Color.White) }
                 TextButton(onClick = {
-                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(absoluteUrl(imageUrl)))
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(
+                        absoluteUrl(if (isVideo) videoUrl ?: imageUrl else imageUrl)
+                    ))
                     statusMsg = "Link copied"
                 }) { Text("Copy link", color = Color.White) }
                 TextButton(
                     enabled = !saving,
                     onClick = {
-                        val url = absoluteUrl(imageUrl)
+                        val url = absoluteUrl(if (isVideo) videoUrl ?: imageUrl else imageUrl)
                         saving = true
                         scope.launch {
-                            // Bug #1: for videos, ensure we have a remuxed
+                            // For videos, ensure we have a remuxed
                             // .r.mp4 with a proper moov atom (duration),
                             // not the raw DASH/fMP4 download which saves
                             // as a 0:00 unplayable file.
