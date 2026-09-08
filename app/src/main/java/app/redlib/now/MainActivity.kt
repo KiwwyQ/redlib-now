@@ -169,9 +169,11 @@ class MainActivity : ComponentActivity() {
                         currentFeed = vm.currentPath,
                         feedSort = vm.feedSort,
                         feedTime = vm.feedTime,
+                        positionKey = vm.positionKey(),
                         onSort = { s, t -> vm.setSort(s, t) },
                         onOpenSearch = { showSearch = true },
                         onRefresh = { vm.refresh() },
+                        onLoadMore = { vm.loadMore() },
                         onOpenPost = { post ->
                             if (post.isGallery) galleryViewer = Pair(post.permalink, post.title)
                             else if (post.imageUrl == null) commentsPost = post else viewerPost = post
@@ -195,6 +197,7 @@ class MainActivity : ComponentActivity() {
                         },
                         onOpenFeed = { vm.load(it) },
                         statePositions = vm.positions,
+                        onExitApp = { finish() },
                     )
                 }
 

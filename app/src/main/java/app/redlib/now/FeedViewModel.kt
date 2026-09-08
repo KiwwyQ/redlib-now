@@ -32,42 +32,57 @@ class FeedViewModel : ViewModel() {
 
     private val loadedPaths = mutableSetOf<String>()
     private var fetchJob: kotlinx.coroutines.Job? = null
+    private var loadMoreJob: kotlinx.coroutines.Job? = null
+
+    /** Per-feed scroll positions keyed by path|sort|time. */
+    val positions = mutableMapOf<String, Pair<Int, Int>>()
 
     init {
         load("/", initial = true)
     }
 
+    fun positionKey(path: String = currentPath, sort: String = feedSort, time: String = feedTime): String =
+        "$path|$sort|$time"
+
     fun setSort(sort: String, time: String = feedTime) {
         feedSort = sort
         feedTime = time
+        // New listing — drop saved offset so UI starts at top.
+        positions.remove(positionKey())
         load(currentPath)
     }
 
-    /** Full fetch path for the current feed + sort. */
+    /** Full fetch path for the current feed + sort (no after=). */
     private fun fetchPath(base: String): String {
         val sort = if (feedSort == "hot") "" else "/$feedSort"
         val time = if (feedSort == "top" || feedSort == "controversial") "?t=$feedTime" else ""
         val joined = if (base == "/") "/${feedSort}" else "$base$sort"
         return when {
             feedSort == "hot" -> base
-            base == "/" -> joined + time   // e.g. /new, /top?t=week
-            else -> base + sort + time     // e.g. /r/aww/new, /r/aww/top?t=week
+            base == "/" -> joined + time
+            else -> base + sort + time
         }
+    }
+
+    /** Append after= cursor, preserving existing query string. */
+    private fun pathWithAfter(basePath: String, after: String): String {
+        val sep = if (basePath.contains('?')) '&' else '?'
+        return basePath + sep + "after=" + java.net.URLEncoder.encode(after, "UTF-8")
     }
 
     fun load(path: String, initial: Boolean = false) {
         currentPath = path
+        loadMoreJob?.cancel()
 
-        // Viewing a subreddit must NOT auto-pin it. Pin/unpin is explicit
-        // via the bookmark button on the subreddit feed top bar.
-
-        // Serve the 72h offline copy instantly when we have one.
         val cached = FeedCache.loadFeed(path)
         if (cached != null) {
             state = FeedUiState(
-                loading = true, // refreshing, but content is already visible
+                loading = true,
                 posts = cached.posts,
-                instanceStatus = "cached ${app.redlib.now.data.MediaCache.ageString(cached.savedAt)} — refreshing…",
+                instanceStatus = "cached ${MediaCache.ageString(cached.savedAt)} — refreshing…",
+                after = null,
+                loadingMore = false,
+                endReached = false,
             )
         } else {
             state = FeedUiState(loading = true)
@@ -77,7 +92,8 @@ class FeedViewModel : ViewModel() {
         fetchJob = viewModelScope.launch {
             try {
                 val response = client.fetch(fetchPath(path))
-                val posts = PostParser.parseFeed(response.html, response.baseUrl)
+                val page = PostParser.parseFeedPage(response.html, response.baseUrl)
+                val posts = page.posts
                     .filter { Settings.postVisible(it) }
                     .filter { !Settings.hideReadPosts || !Repo.isRead(it.id) }
                 loadedPaths += path
@@ -85,15 +101,14 @@ class FeedViewModel : ViewModel() {
                     loading = false,
                     posts = posts,
                     instanceStatus = "served by ${response.baseUrl.removePrefix("https://")}",
+                    after = page.after,
+                    loadingMore = false,
+                    endReached = page.after == null,
                 )
                 FeedCache.saveFeed(path, posts)
-                // Bug #3: only prefetch when the cached copy didn't already
-                // satisfy the screen — skips redundant image work on refresh
-                // and on returning to a feed we just looked at.
                 if (cached == null) MediaCache.prefetch(posts)
             } catch (e: Exception) {
                 if (cached != null) {
-                    // Offline: keep showing the cached feed.
                     state = state.copy(loading = false, error = null)
                 } else {
                     state = state.copy(
@@ -108,8 +123,40 @@ class FeedViewModel : ViewModel() {
 
     fun refresh() = load(currentPath)
 
-    /** Per-feed scroll positions ("remember subreddit position"). */
-    val positions = mutableMapOf<String, Pair<Int, Int>>()
+    /** Load next page using Reddit/Redlib after= cursor (last post id token). */
+    fun loadMore() {
+        val after = state.after ?: return
+        if (state.loading || state.loadingMore || state.endReached) return
+        if (loadMoreJob?.isActive == true) return
+
+        loadMoreJob = viewModelScope.launch {
+            state = state.copy(loadingMore = true, error = null)
+            try {
+                val base = fetchPath(currentPath)
+                val response = client.fetch(pathWithAfter(base, after))
+                val page = PostParser.parseFeedPage(response.html, response.baseUrl)
+                val more = page.posts
+                    .filter { Settings.postVisible(it) }
+                    .filter { !Settings.hideReadPosts || !Repo.isRead(it.id) }
+                // Dedupe by id in case of overlap.
+                val existing = state.posts.map { it.id }.toHashSet()
+                val merged = state.posts + more.filter { it.id !in existing }
+                state = state.copy(
+                    loadingMore = false,
+                    posts = merged,
+                    after = page.after,
+                    endReached = page.after == null || more.isEmpty(),
+                    instanceStatus = "served by ${response.baseUrl.removePrefix("https://")}",
+                )
+                FeedCache.saveFeed(currentPath, merged)
+            } catch (e: Exception) {
+                state = state.copy(
+                    loadingMore = false,
+                    error = "Failed to load more: ${e.message ?: e.javaClass.simpleName}",
+                )
+            }
+        }
+    }
 
     fun markRead(id: String) {
         Repo.markRead(id)

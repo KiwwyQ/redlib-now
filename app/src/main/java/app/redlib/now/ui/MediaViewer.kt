@@ -219,7 +219,7 @@ fun MediaViewer(title: String, imageUrl: String?, videoUrl: String?, isVideo: Bo
                                 MediaCache.getOrDownload(url)
                             }
                             if (f != null) {
-                                statusMsg = if (saveToGallery(context, f, isVideo))
+                                statusMsg = if (saveMediaToGallery(context, f, isVideo))
                                     "Saved to gallery" else "Save failed"
                             } else {
                                 statusMsg = "Nothing to save yet"
@@ -255,20 +255,49 @@ private fun shareMedia(context: android.content.Context, file: File, isVideo: Bo
     }
 }
 
+/** Infer MIME from filename / extension. */
+internal fun mimeFromFile(file: File): String {
+    val n = file.name.lowercase()
+    return when {
+        n.endsWith(".mp4") || n.endsWith(".r.mp4") -> "video/mp4"
+        n.endsWith(".webm") -> "video/webm"
+        n.endsWith(".png") -> "image/png"
+        n.endsWith(".webp") -> "image/webp"
+        n.endsWith(".gif") -> "image/gif"
+        n.endsWith(".jpeg") || n.endsWith(".jpg") -> "image/jpeg"
+        else -> if (n.contains("mp4")) "video/mp4" else "image/jpeg"
+    }
+}
+
+internal fun extFromMime(mime: String): String = when (mime) {
+    "video/mp4" -> "mp4"
+    "video/webm" -> "webm"
+    "image/png" -> "png"
+    "image/webp" -> "webp"
+    "image/gif" -> "gif"
+    else -> "jpg"
+}
+
 /** Copy a cached media file into the public gallery (MediaStore, no permission needed on API 29+). */
-private fun saveToGallery(context: android.content.Context, file: File, isVideo: Boolean): Boolean {
+internal fun saveMediaToGallery(context: android.content.Context, file: File, isVideo: Boolean): Boolean {
     try {
         val resolver = context.contentResolver
-        val mime = if (isVideo || file.name.endsWith(".mp4")) "video/mp4" else "image/jpeg"
-        val collection = if (isVideo || file.name.endsWith(".mp4"))
+        val mime = if (isVideo) {
+            val m = mimeFromFile(file)
+            if (m.startsWith("video/")) m else "video/mp4"
+        } else {
+            val m = mimeFromFile(file)
+            if (m.startsWith("image/")) m else "image/jpeg"
+        }
+        val collection = if (mime.startsWith("video/"))
             android.provider.MediaStore.Video.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
         else
             android.provider.MediaStore.Images.Media.getContentUri(android.provider.MediaStore.VOLUME_EXTERNAL_PRIMARY)
         val values = android.content.ContentValues().apply {
-            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "redlib-now-${System.currentTimeMillis()}.${if (mime=="video/mp4") "mp4" else "jpg"}")
+            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, "redlib-now-${System.currentTimeMillis()}.${extFromMime(mime)}")
             put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
             put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
-                if (mime == "video/mp4") "Movies/RedlibNow" else "Pictures/RedlibNow")
+                if (mime.startsWith("video/")) "Movies/RedlibNow" else "Pictures/RedlibNow")
         }
         val uri = resolver.insert(collection, values) ?: return false
         resolver.openOutputStream(uri)?.use { out ->

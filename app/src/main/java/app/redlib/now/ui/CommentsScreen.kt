@@ -455,12 +455,16 @@ private fun GifClip(id: String, onOpen: (String) -> Unit = {}) {
     }
 }
 
-/** Drag right to go back (classic "swipe back" gesture), when enabled. */
-private fun Modifier.swipeBack(enabled: Boolean, onBack: () -> Unit): Modifier =
-    this.pointerInput(enabled) {
+/**
+ * Edge-only swipe-right to go back. Starts within [edgePx] of the left edge
+ * so normal list scrolling does not dismiss the screen.
+ */
+internal fun Modifier.swipeBack(enabled: Boolean, onBack: () -> Unit, edgePx: Float = 48f): Modifier =
+    this.pointerInput(enabled, edgePx) {
         if (!enabled) return@pointerInput
         awaitEachGesture {
-            awaitFirstDown(requireUnconsumed = false)
+            val down = awaitFirstDown(requireUnconsumed = false)
+            if (down.position.x > edgePx) return@awaitEachGesture
             var accX = 0f
             var accY = 0f
             do {
@@ -471,8 +475,6 @@ private fun Modifier.swipeBack(enabled: Boolean, onBack: () -> Unit): Modifier =
                     accY += ch.position.y - ch.previousPosition.y
                 }
             } while (event.changes.any { it.pressed })
-            // Only a deliberately horizontal swipe navigates back; vertical
-            // scrolling with slight drift must not.
             if (accX > 120f && kotlin.math.abs(accX) > 2 * kotlin.math.abs(accY)) onBack()
         }
     }
