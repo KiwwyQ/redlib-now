@@ -30,6 +30,7 @@ fun UserScreen(
     onOpenPost: (Post) -> Unit,
     onOpenComments: (Post) -> Unit,
     onOpenMedia: (Post) -> Unit,
+    onOpenSubreddit: (String) -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
 
@@ -101,6 +102,7 @@ fun UserScreen(
                         onClick = { onOpenPost(post) },
                         onOpenComments = { onOpenComments(post) },
                         onOpenMedia = { onOpenMedia(post) },
+                        onOpenSubreddit = onOpenSubreddit,
                     )
                 }
             }

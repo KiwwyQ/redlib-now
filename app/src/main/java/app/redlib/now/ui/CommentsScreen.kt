@@ -216,6 +216,8 @@ private fun CommentPostHeader(post: Post, onOpenMedia: (Post) -> Unit, onOpenUse
                 onOpenComments = {},
                 onOpenMedia = { onOpenMedia(post) },
                 onOpenUser = onOpenUser,
+                // Subreddit navigation is handled by the comments screen chrome;
+                // leave default no-op so the header card stays non-navigating.
                 modifier = Modifier.padding(top = 6.dp),
             )
         }

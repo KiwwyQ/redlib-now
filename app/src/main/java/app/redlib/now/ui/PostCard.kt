@@ -40,6 +40,7 @@ fun PostCard(
     onOpenComments: () -> Unit,
     onOpenMedia: () -> Unit,
     onOpenUser: (String) -> Unit = {},
+    onOpenSubreddit: (String) -> Unit = {},
     onOpenGallery: (Post) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -71,6 +72,9 @@ fun PostCard(
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.clickable {
+                        if (post.subreddit.isNotBlank()) onOpenSubreddit(post.subreddit)
+                    },
                 )
                 HeaderDot()
                 post.author?.let {

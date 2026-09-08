@@ -31,6 +31,7 @@ fun PostSearchScreen(
     onOpenPost: (Post) -> Unit,
     onOpenComments: (Post) -> Unit,
     onOpenMedia: (Post) -> Unit,
+    onOpenSubreddit: (String) -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
     var query by remember { mutableStateOf("") }
@@ -99,6 +100,7 @@ fun PostSearchScreen(
                         onClick = { onOpenPost(post) },
                         onOpenComments = { onOpenComments(post) },
                         onOpenMedia = { onOpenMedia(post) },
+                        onOpenSubreddit = onOpenSubreddit,
                     )
                 }
             }

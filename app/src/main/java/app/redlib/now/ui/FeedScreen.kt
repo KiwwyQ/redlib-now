@@ -290,6 +290,7 @@ fun FeedScreen(
                         onOpenComments = { onMarkRead(post.id); onOpenComments(post) },
                         onOpenMedia = { onOpenMedia(post) },
                         onOpenUser = onOpenUser,
+                        onOpenSubreddit = { onOpenFeed("/r/$it") },
                         onOpenGallery = { onOpenGallery(post) },
                     )
                 }

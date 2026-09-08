@@ -27,6 +27,7 @@ fun SavedScreen(
     onOpenPost: (Post) -> Unit,
     onOpenComments: (Post) -> Unit,
     onOpenMedia: (Post) -> Unit,
+    onOpenSubreddit: (String) -> Unit = {},
 ) {
     BackHandler(onBack = onBack)
     Surface(
@@ -60,6 +61,7 @@ fun SavedScreen(
                         onClick = { onOpenPost(post) },
                         onOpenComments = { onOpenComments(post) },
                         onOpenMedia = { onOpenMedia(post) },
+                        onOpenSubreddit = onOpenSubreddit,
                     )
                 }
             }
