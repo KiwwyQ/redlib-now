@@ -106,6 +106,10 @@ class MainActivity : ComponentActivity() {
                             showSaved = false
                             viewerPost = it
                         },
+                        onOpenSubreddit = { sub ->
+                            showSaved = false
+                            vm.load("/r/$sub")
+                        },
                     )
                     showBrowse -> SubredditBrowseScreen(
                         onBack = { showBrowse = false },
@@ -123,6 +127,10 @@ class MainActivity : ComponentActivity() {
                         },
                         onOpenComments = { commentsPost = it },
                         onOpenMedia = { viewerPost = it },
+                        onOpenSubreddit = { sub ->
+                            postSearchOpen = false
+                            vm.load("/r/$sub")
+                        },
                     )
                     viewerPost != null -> MediaViewer(
                         post = viewerPost!!,
@@ -137,6 +145,10 @@ class MainActivity : ComponentActivity() {
                         },
                         onOpenComments = { commentsPost = it },
                         onOpenMedia = { viewerPost = it },
+                        onOpenSubreddit = { sub ->
+                            userProfile = null
+                            vm.load("/r/$sub")
+                        },
                     )
                     commentsPost != null -> CommentsScreen(
                         post = commentsPost!!,
