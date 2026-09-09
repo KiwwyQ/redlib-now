@@ -9,9 +9,10 @@ import app.redlib.now.data.FeedCache
 import app.redlib.now.data.MediaCache
 import app.redlib.now.data.Repo
 import app.redlib.now.data.Settings
-import app.redlib.now.model.Post
 import app.redlib.now.parse.PostParser
 import app.redlib.now.ui.FeedUiState
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 
 class FeedViewModel : ViewModel() {
@@ -24,15 +25,14 @@ class FeedViewModel : ViewModel() {
     var currentPath by mutableStateOf("/")
         private set
 
-    // Sort state (parity with the classic app's sort menus).
-    var feedSort by mutableStateOf("hot")      // hot, new, rising, top, controversial
+    var feedSort by mutableStateOf("hot")
         private set
-    var feedTime by mutableStateOf("all")      // hour, day, week, month, year, all
+    var feedTime by mutableStateOf("all")
         private set
 
     private val loadedPaths = mutableSetOf<String>()
-    private var fetchJob: kotlinx.coroutines.Job? = null
-    private var loadMoreJob: kotlinx.coroutines.Job? = null
+    private var fetchJob: Job? = null
+    private var loadMoreJob: Job? = null
 
     /** Per-feed scroll positions keyed by path|sort|time. */
     val positions = mutableMapOf<String, Pair<Int, Int>>()
@@ -47,12 +47,10 @@ class FeedViewModel : ViewModel() {
     fun setSort(sort: String, time: String = feedTime) {
         feedSort = sort
         feedTime = time
-        // New listing — drop saved offset so UI starts at top.
         positions.remove(positionKey())
         load(currentPath)
     }
 
-    /** Full fetch path for the current feed + sort (no after=). */
     private fun fetchPath(base: String): String {
         val sort = if (feedSort == "hot") "" else "/$feedSort"
         val time = if (feedSort == "top" || feedSort == "controversial") "?t=$feedTime" else ""
@@ -64,7 +62,6 @@ class FeedViewModel : ViewModel() {
         }
     }
 
-    /** Append after= cursor, preserving existing query string. */
     private fun pathWithAfter(basePath: String, after: String): String {
         val sep = if (basePath.contains('?')) '&' else '?'
         return basePath + sep + "after=" + java.net.URLEncoder.encode(after, "UTF-8")
@@ -83,6 +80,7 @@ class FeedViewModel : ViewModel() {
                 after = null,
                 loadingMore = false,
                 endReached = false,
+                loadMoreFailed = false,
             )
         } else {
             state = FeedUiState(loading = true)
@@ -104,15 +102,21 @@ class FeedViewModel : ViewModel() {
                     after = page.after,
                     loadingMore = false,
                     endReached = page.after == null,
+                    loadMoreFailed = false,
                 )
                 FeedCache.saveFeed(path, posts)
                 if (cached == null) MediaCache.prefetch(posts)
+            } catch (e: CancellationException) {
+                // Don't treat cancel as an error; clear loading flags.
+                state = state.copy(loading = false, loadingMore = false)
+                throw e
             } catch (e: Exception) {
                 if (cached != null) {
-                    state = state.copy(loading = false, error = null)
+                    state = state.copy(loading = false, loadingMore = false, error = null)
                 } else {
                     state = state.copy(
                         loading = false,
+                        loadingMore = false,
                         posts = if (initial) emptyList() else state.posts,
                         error = "Failed to load: ${e.message ?: e.javaClass.simpleName}",
                     )
@@ -123,14 +127,13 @@ class FeedViewModel : ViewModel() {
 
     fun refresh() = load(currentPath)
 
-    /** Load next page using Reddit/Redlib after= cursor (last post id token). */
     fun loadMore() {
         val after = state.after ?: return
         if (state.loading || state.loadingMore || state.endReached) return
         if (loadMoreJob?.isActive == true) return
 
         loadMoreJob = viewModelScope.launch {
-            state = state.copy(loadingMore = true, error = null)
+            state = state.copy(loadingMore = true, loadMoreFailed = false, error = null)
             try {
                 val base = fetchPath(currentPath)
                 val response = client.fetch(pathWithAfter(base, after))
@@ -138,24 +141,38 @@ class FeedViewModel : ViewModel() {
                 val more = page.posts
                     .filter { Settings.postVisible(it) }
                     .filter { !Settings.hideReadPosts || !Repo.isRead(it.id) }
-                // Dedupe by id in case of overlap.
                 val existing = state.posts.map { it.id }.toHashSet()
                 val merged = state.posts + more.filter { it.id !in existing }
                 state = state.copy(
                     loadingMore = false,
+                    loadMoreFailed = false,
                     posts = merged,
                     after = page.after,
                     endReached = page.after == null || more.isEmpty(),
                     instanceStatus = "served by ${response.baseUrl.removePrefix("https://")}",
                 )
                 FeedCache.saveFeed(currentPath, merged)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 state = state.copy(
                     loadingMore = false,
+                    loadMoreFailed = true,
                     error = "Failed to load more: ${e.message ?: e.javaClass.simpleName}",
                 )
+            } finally {
+                // Always clear spinner — including cancel races.
+                if (state.loadingMore) {
+                    state = state.copy(loadingMore = false)
+                }
             }
         }
+    }
+
+    /** User tapped "retry" on the footer after a failed load-more. */
+    fun retryLoadMore() {
+        state = state.copy(loadMoreFailed = false, error = null)
+        loadMore()
     }
 
     fun markRead(id: String) {

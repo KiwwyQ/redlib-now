@@ -174,6 +174,7 @@ class MainActivity : ComponentActivity() {
                         onOpenSearch = { showSearch = true },
                         onRefresh = { vm.refresh() },
                         onLoadMore = { vm.loadMore() },
+                        onRetryLoadMore = { vm.retryLoadMore() },
                         onOpenPost = { post ->
                             if (post.isGallery) galleryViewer = Pair(post.permalink, post.title)
                             else if (post.imageUrl == null) commentsPost = post else viewerPost = post
