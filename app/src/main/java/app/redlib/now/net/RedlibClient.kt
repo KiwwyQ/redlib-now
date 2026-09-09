@@ -128,7 +128,7 @@ class RedlibClient(
             hops++
             val url = currentBase + currentPath
             Logd.d("hop#$hops GET $url")
-            val call = Http.client.newCall(Request.Builder().url(url).build())
+            val call = Http.rawClient.newCall(Request.Builder().url(url).build())
             val resp = call.execute()
             val code = resp.code
             val body = resp.use { it.body?.string() }
@@ -144,10 +144,10 @@ class RedlibClient(
                 }
                 val t0 = System.currentTimeMillis()
                 val solution = kotlinx.coroutines.runBlocking { Anubis.solveOffMain(challenge) }
-                Logd.i("hop#$hops: Anubis challenge id=${challenge.id} diff=${challenge.difficulty} " +
+                Logd.i("hop#$hops: Anubis challenge id=${challenge.id} algo=${challenge.algorithm} diff=${challenge.difficulty} " +
                     "solved nonce=${solution.nonce} in ${System.currentTimeMillis() - t0}ms")
                 val passUrl = Anubis.passChallengeUrl(currentBase, currentPath, challenge, solution, 500)
-                Http.client.newCall(Request.Builder().url(passUrl).build()).execute().use { pass ->
+                Http.rawClient.newCall(Request.Builder().url(passUrl).build()).execute().use { pass ->
                     val passBody = pass.body?.string().orEmpty()
                     Logd.i("hop#$hops: pass-challenge status=${pass.code} len=${passBody.length} " +
                         "cookiesNow=${run { val h = okhttp3.HttpUrl.Companion.run { url.toHttpUrl() }; Http.cookieJar.loadForRequest(h).map { it.name } }}")
@@ -187,4 +187,45 @@ class RedlibClient(
     }
 
     fun baseUrl(): String? = currentBase.get()
+
+    /**
+     * Ensure we hold a valid Anubis clearance cookie for [base].
+     * Used by media downloads when the host returns challenge HTML / 401-429
+     * instead of media bytes. Does not require a full feed parse.
+     *
+     * @return true if a media retry is worth attempting.
+     */
+    fun ensureAuth(base: String?): Boolean {
+        val b = base?.trim()?.removeSuffix("/") ?: return false
+        if (b.isEmpty()) return false
+        return try {
+            val url = "$b/"
+            val call = Http.rawClient.newCall(Request.Builder().url(url).build())
+            val body = call.execute().use { it.body?.string().orEmpty() }
+            if (body.isEmpty()) return false
+            // Already past the gate.
+            if (!Anubis.isChallenge(body) && "Access Denied" !in body) {
+                return true
+            }
+            val challenge = Anubis.extractChallenge(body)
+            if (challenge == null) {
+                // Hard deny (Oh noes / 429) — nothing to solve.
+                Logd.w("ensureAuth: challenge unreadable / access denied on $b")
+                return false
+            }
+            val t0 = System.currentTimeMillis()
+            val solution = kotlinx.coroutines.runBlocking { Anubis.solveOffMain(challenge) }
+            Logd.i("ensureAuth: solved ${challenge.id} algo=${challenge.algorithm} in ${System.currentTimeMillis() - t0}ms")
+            val passUrl = Anubis.passChallengeUrl(b, "/", challenge, solution, 500)
+            Http.rawClient.newCall(Request.Builder().url(passUrl).build()).execute().use { pass ->
+                Logd.i("ensureAuth: pass-challenge status=${pass.code}")
+            }
+            // Brief settle so cookie is visible to the next media call.
+            Thread.sleep(150)
+            true
+        } catch (t: Throwable) {
+            Logd.w("ensureAuth failed for $b: ${t.message}")
+            false
+        }
+    }
 }
