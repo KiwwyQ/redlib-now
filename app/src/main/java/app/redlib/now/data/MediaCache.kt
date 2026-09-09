@@ -9,7 +9,12 @@ import java.nio.ByteBuffer
 import app.redlib.now.net.Http
 import app.redlib.now.net.Logd
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import app.redlib.now.net.Anubis
+import app.redlib.now.data.Repo
 import java.io.File
 import java.security.MessageDigest
 
@@ -30,6 +35,9 @@ object MediaCache {
     const val RETENTION_MS = 72L * 3600 * 1000
     private const val MAX_VIDEO_BYTES = 300L * 1024 * 1024
     private const val MIN_MEDIA_BYTES = 1024L
+    /** Cap parallel media GETs so we do not trip instance rate limits. */
+    private val downloadSemaphore = Semaphore(3)
+    @Volatile private var lastAuthAttemptMs = 0L
 
     private lateinit var dir: File
 
@@ -63,25 +71,42 @@ object MediaCache {
     /** Download (or reuse) a local copy. Progress callback 0..100, may be null. */
     suspend fun getOrDownload(url: String, onProgress: ((Int?) -> Unit)? = null): File? =
         withContext(Dispatchers.IO) {
-            try {
-                if (isPlaylistOrNonMediaUrl(url)) {
-                    Logd.w("refusing non-media url: $url")
-                    return@withContext null
-                }
-                val f = fileFor(url, extOf(url))
-                if (f.length() > MIN_MEDIA_BYTES) {
-                    onProgress?.invoke(100)
-                    return@withContext f
-                }
-                val tmp = File(dir, md5(url) + ".part")
-                tmp.delete()
-                val req = okhttp3.Request.Builder().url(url).build()
-                Http.client.newCall(req).execute().use { resp ->
-                    if (!resp.isSuccessful) {
-                        Logd.w("media download failed $url -> ${resp.code}")
-                        return@withContext null
-                    }
-                    val body = resp.body ?: return@withContext null
+            downloadSemaphore.withPermit {
+                downloadOnce(url, onProgress, allowRetry = true)
+            }
+        }
+
+    /**
+     * Single download attempt. On challenge HTML / 401-429, optionally
+     * re-run Anubis via [RedlibClient.ensureAuth], soft-delay, and retry once.
+     */
+    private suspend fun downloadOnce(
+        url: String,
+        onProgress: ((Int?) -> Unit)?,
+        allowRetry: Boolean,
+    ): File? {
+        try {
+            if (isPlaylistOrNonMediaUrl(url)) {
+                Logd.w("refusing non-media url: $url")
+                return null
+            }
+            val f = fileFor(url, extOf(url))
+            if (f.length() > MIN_MEDIA_BYTES) {
+                onProgress?.invoke(100)
+                return f
+            }
+            val tmp = File(dir, md5(url) + ".part")
+            tmp.delete()
+            val req = okhttp3.Request.Builder().url(url).build()
+            var code = 0
+            var bodyBytes: ByteArray? = null
+            Http.client.newCall(req).execute().use { resp ->
+                code = resp.code
+                if (!resp.isSuccessful) {
+                    Logd.w("media download failed $url -> $code")
+                    bodyBytes = resp.body?.bytes()
+                } else {
+                    val body = resp.body ?: return null
                     val total = body.contentLength()
                     body.byteStream().use { input ->
                         tmp.outputStream().use { output ->
@@ -100,20 +125,60 @@ object MediaCache {
                         }
                     }
                 }
-                if (!isLikelyMediaFile(tmp)) {
-                    Logd.w("media download not usable media, discarding: $url (${tmp.length()} bytes)")
-                    tmp.delete()
-                    return@withContext null
-                }
-                val ok = tmp.renameTo(f)
-                return@withContext if (ok && f.length() > 0L) f else null
-            } catch (t: Throwable) {
-                Logd.e("media download error $url", t)
-                null
             }
+            // Rate-limit / challenge recovery path.
+            val challengeBody = when {
+                bodyBytes != null -> bodyBytes!!.toString(Charsets.ISO_8859_1)
+                tmp.exists() && tmp.length() in 1..64_000 ->
+                    tmp.inputStream().use { it.readNBytes(512).toString(Charsets.ISO_8859_1) }
+                else -> ""
+            }
+            val needsAuth = code in listOf(401, 403, 429) ||
+                (challengeBody.isNotEmpty() && (
+                    Anubis.isChallenge(challengeBody) ||
+                        challengeBody.contains("Access Denied", ignoreCase = true) ||
+                        challengeBody.contains("<html", ignoreCase = true)
+                ))
+            if (needsAuth && allowRetry) {
+                tmp.delete()
+                val origin = originOf(url)
+                val now = System.currentTimeMillis()
+                // Soft backoff only when the host pushed back — not on every image.
+                val wait = when (code) {
+                    429 -> 800L
+                    403, 401 -> 400L
+                    else -> 250L
+                }
+                // Avoid stampeding ensureAuth from many parallel Coil/media calls.
+                if (now - lastAuthAttemptMs > 2_000L) {
+                    lastAuthAttemptMs = now
+                    Logd.i("media: host pushback ($code) on $url — ensureAuth($origin)")
+                    Repo.client.ensureAuth(origin)
+                }
+                delay(wait)
+                return downloadOnce(url, onProgress, allowRetry = false)
+            }
+            if (code !in 200..299) {
+                tmp.delete()
+                return null
+            }
+            if (!isLikelyMediaFile(tmp)) {
+                Logd.w("media download not usable media, discarding: $url (${tmp.length()} bytes)")
+                tmp.delete()
+                return null
+            }
+            val ok = tmp.renameTo(f)
+            return if (ok && f.length() > 0L) f else null
+        } catch (t: Throwable) {
+            Logd.e("media download error $url", t)
+            null
         }
+    }
 
-    /**
+    private fun originOf(url: String): String? =
+        Regex("""^(https?://[^/]+)""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1)
+
+        /**
      * Full video pipeline for play + save:
      *  1. Resolve progressive video (+ optional audio) URLs from the Redlib source.
      *  2. Download them through the shared OkHttp client (Anubis cookies).
@@ -137,12 +202,14 @@ object MediaCache {
             var videoFile: File? = null
             for ((i, vUrl) in plan.videoUrls.withIndex()) {
                 Logd.i("video try [$i]: $vUrl")
-                val head = headContentLength(vUrl)
-                if (head != null && head > MAX_VIDEO_BYTES) {
-                    Logd.w("video too large ($head bytes), skip: $vUrl")
-                    continue
+                // HEAD only the first candidate — extra HEADs add up fast under Anubis.
+                if (i == 0) {
+                    val head = headContentLength(vUrl)
+                    if (head != null && head > MAX_VIDEO_BYTES) {
+                        Logd.w("video too large ($head bytes), skip plan")
+                        return@withContext null
+                    }
                 }
-                // Scale progress across candidates roughly.
                 val f = getOrDownload(vUrl) { pct ->
                     if (pct != null) onProgress((pct * 0.7).toInt().coerceIn(0, 70))
                 }
@@ -234,10 +301,10 @@ object MediaCache {
             val base = origin + basePath
             val video = linkedSetOf<String>()
             // Prefer mid qualities first (faster, usually enough); then higher.
+            // Prefer mid quality first, then higher/lower — full ladder, no quality tradeoff.
             for (q in listOf("480", "720", "360", "270", "220", "1080")) {
                 video += base + "CMAF_$q.mp4"
             }
-            // Legacy DASH fallbacks (older posts / older Reddit packaging).
             for (q in listOf("480", "720", "360", "1080")) {
                 video += base + "DASH_$q.mp4"
             }
