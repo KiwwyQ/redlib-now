@@ -12,6 +12,7 @@ import androidx.compose.material.icons.filled.GridOn
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -24,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.redlib.now.data.Repo
 import app.redlib.now.model.Post
+import app.redlib.now.parse.PostParser
 import kotlinx.coroutines.launch
 
 /**
@@ -42,6 +44,7 @@ fun FeedScreen(
     onOpenSearch: () -> Unit,
     onRefresh: () -> Unit,
     onLoadMore: () -> Unit,
+    onRetryLoadMore: () -> Unit = {},
     onOpenPost: (Post) -> Unit,
     onOpenComments: (Post) -> Unit,
     onOpenMedia: (Post) -> Unit,
@@ -61,6 +64,13 @@ fun FeedScreen(
     val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
     val snackHost = remember { SnackbarHostState() }
     var lastBackAt by remember { mutableStateOf(0L) }
+
+    // In-subreddit search (docked under the app bar — not a separate screen).
+    var searchExpanded by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var searchResults by remember { mutableStateOf<List<Post>?>(null) }
+    var searchBusy by remember { mutableStateOf(false) }
+    var searchError by remember { mutableStateOf<String?>(null) }
 
     // System back: close drawer first, else double-press to exit on main feed.
     BackHandler {
@@ -268,14 +278,23 @@ fun FeedScreen(
                                 }
                             }
                         }
-                        // In a subreddit → post search scoped to that sub; else subreddit finder.
                         IconButton(onClick = {
-                            if (subName != null) onOpenPostSearch(subName)
-                            else onOpenSearch()
+                            if (subName != null) {
+                                searchExpanded = !searchExpanded
+                                if (!searchExpanded) {
+                                    searchQuery = ""
+                                    searchResults = null
+                                    searchError = null
+                                }
+                            } else {
+                                onOpenSearch()
+                            }
                         }) {
                             Icon(
-                                Icons.Filled.Search,
-                                contentDescription = if (subName != null) "Search posts in r/$subName" else "Search subreddits",
+                                if (searchExpanded) Icons.Filled.Close else Icons.Filled.Search,
+                                contentDescription = if (subName != null) {
+                                    if (searchExpanded) "Close search" else "Search posts in r/$subName"
+                                } else "Search subreddits",
                             )
                         }
                         IconButton(onClick = onRefresh) {
@@ -290,8 +309,72 @@ fun FeedScreen(
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
                 // Visible refresh feedback while content is still on screen.
-                if (state.loading && state.posts.isNotEmpty()) {
+                if (state.loading && state.posts.isNotEmpty() && searchResults == null) {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
+                }
+                // Docked in-sub search (Material-style: stays on the same screen).
+                if (searchExpanded) {
+                    val sub = currentFeed.removePrefix("/r/").removeSuffix("/")
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { searchQuery = it },
+                            placeholder = { Text("Search r/$sub…") },
+                            singleLine = true,
+                            shape = MaterialTheme.shapes.extraLarge,
+                            modifier = Modifier.weight(1f),
+                        )
+                        IconButton(
+                            enabled = searchQuery.isNotBlank() && !searchBusy,
+                            onClick = {
+                                val q = searchQuery.trim()
+                                if (q.isEmpty()) return@IconButton
+                                searchBusy = true
+                                searchError = null
+                                scope.launch {
+                                    try {
+                                        val encoded = java.net.URLEncoder.encode(q, "UTF-8")
+                                        val path = "/r/$sub/search?q=$encoded&restrict_sr=on"
+                                        val resp = Repo.client.fetch(path)
+                                        if (resp.html.contains("Failed to parse page JSON", ignoreCase = true)) {
+                                            searchResults = emptyList()
+                                            searchError = "Search unavailable on this instance"
+                                        } else {
+                                            val parsed = PostParser.parseFeed(resp.html, resp.baseUrl)
+                                                .filter { app.redlib.now.data.Settings.postVisible(it) }
+                                                .filter { it.subreddit.equals(sub, ignoreCase = true) }
+                                            searchResults = parsed
+                                            if (parsed.isEmpty()) searchError = "No results"
+                                            else searchError = null
+                                        }
+                                    } catch (t: Throwable) {
+                                        searchResults = emptyList()
+                                        searchError = t.message ?: "Search failed"
+                                    } finally {
+                                        searchBusy = false
+                                    }
+                                }
+                            },
+                        ) {
+                            Icon(Icons.Filled.Search, contentDescription = "Run search")
+                        }
+                    }
+                    if (searchBusy) {
+                        LinearProgressIndicator(Modifier.fillMaxWidth())
+                    }
+                    searchError?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        )
+                    }
                 }
                 when {
                     state.loading && state.posts.isEmpty() -> Box(
@@ -315,12 +398,14 @@ fun FeedScreen(
                         contentAlignment = Alignment.Center,
                     ) { Text(if (state.error != null) state.error else "Nothing to show yet.") }
                     else -> {
-                        val remembered = if (app.redlib.now.data.Settings.rememberSubredditPosition)
+                        val displayedPosts = searchResults ?: state.posts
+                        val inSearch = searchResults != null
+                        val remembered = if (!inSearch && app.redlib.now.data.Settings.rememberSubredditPosition)
                             statePositions[positionKey] else null
-                        val listState = remember(positionKey) {
+                        val listState = remember(positionKey, inSearch) {
                             androidx.compose.foundation.lazy.LazyListState(
-                                firstVisibleItemIndex = remembered?.first ?: 0,
-                                firstVisibleItemScrollOffset = remembered?.second ?: 0,
+                                firstVisibleItemIndex = if (inSearch) 0 else (remembered?.first ?: 0),
+                                firstVisibleItemScrollOffset = if (inSearch) 0 else (remembered?.second ?: 0),
                             )
                         }
                         // Persist scroll while browsing; flush on leave.
@@ -350,8 +435,15 @@ fun FeedScreen(
                                 total > 0 && last >= total - 3
                             }
                         }
-                        LaunchedEffect(shouldLoadMore, state.after, state.loadingMore, state.endReached) {
-                            if (shouldLoadMore && state.after != null && !state.loadingMore && !state.endReached && !state.loading) {
+                        LaunchedEffect(shouldLoadMore, state.after, state.loadingMore, state.endReached, state.loadMoreFailed, inSearch) {
+                            if (!inSearch &&
+                                shouldLoadMore &&
+                                state.after != null &&
+                                !state.loadingMore &&
+                                !state.endReached &&
+                                !state.loading &&
+                                !state.loadMoreFailed
+                            ) {
                                 onLoadMore()
                             }
                         }
@@ -364,7 +456,7 @@ fun FeedScreen(
                             modifier = Modifier.fillMaxSize(),
                             contentPadding = PaddingValues(vertical = 4.dp),
                         ) {
-                            items(state.posts, key = { it.id }) { post ->
+                            items(displayedPosts, key = { it.id }) { post ->
                                 PostCard(
                                     post = post,
                                     onClick = { onOpenPost(post) },
@@ -375,19 +467,24 @@ fun FeedScreen(
                                     onOpenGallery = { onOpenGallery(post) },
                                 )
                             }
-                            item {
-                                Box(
-                                    Modifier.fillMaxWidth().padding(16.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    when {
-                                        state.loadingMore -> CircularProgressIndicator(Modifier.size(28.dp))
-                                        state.endReached -> Text(
-                                            "That's all",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        )
-                                        else -> Spacer(Modifier.height(8.dp))
+                            if (!inSearch) {
+                                item {
+                                    Box(
+                                        Modifier.fillMaxWidth().padding(16.dp),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        when {
+                                            state.loadingMore -> CircularProgressIndicator(Modifier.size(28.dp))
+                                            state.loadMoreFailed -> TextButton(onClick = onRetryLoadMore) {
+                                                Text("Couldn't load more · Tap to retry")
+                                            }
+                                            state.endReached -> Text(
+                                                "That's all",
+                                                style = MaterialTheme.typography.labelMedium,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                            else -> Spacer(Modifier.height(8.dp))
+                                        }
                                     }
                                 }
                             }
@@ -407,6 +504,8 @@ data class FeedUiState(
     val after: String? = null,
     val loadingMore: Boolean = false,
     val endReached: Boolean = false,
+    /** True after a failed load-more so UI can show retry instead of spinning. */
+    val loadMoreFailed: Boolean = false,
 )
 
 private fun sortLabel(sort: String, time: String): String = when (sort) {
