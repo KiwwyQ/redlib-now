@@ -171,14 +171,14 @@ object MediaCache {
             return if (ok && f.length() > 0L) f else null
         } catch (t: Throwable) {
             Logd.e("media download error $url", t)
-            null
+            return null
         }
     }
 
     private fun originOf(url: String): String? =
         Regex("""^(https?://[^/]+)""", RegexOption.IGNORE_CASE).find(url)?.groupValues?.get(1)
 
-        /**
+    /**
      * Full video pipeline for play + save:
      *  1. Resolve progressive video (+ optional audio) URLs from the Redlib source.
      *  2. Download them through the shared OkHttp client (Anubis cookies).
