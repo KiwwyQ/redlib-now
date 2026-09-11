@@ -37,7 +37,6 @@ object MediaCache {
     private const val MIN_MEDIA_BYTES = 1024L
     /** Cap parallel media GETs so we do not trip instance rate limits. */
     private val downloadSemaphore = Semaphore(3)
-    @Volatile private var lastAuthAttemptMs = 0L
 
     private lateinit var dir: File
 
@@ -72,18 +71,27 @@ object MediaCache {
     suspend fun getOrDownload(url: String, onProgress: ((Int?) -> Unit)? = null): File? =
         withContext(Dispatchers.IO) {
             downloadSemaphore.withPermit {
-                downloadOnce(url, onProgress, allowRetry = true)
+                // Interceptor already retries Anubis; extra passes for HTML-as-body edge cases.
+                var result: File? = null
+                for (attempt in 0 until 4) {
+                    result = downloadOnce(url, onProgress)
+                    if (result != null) break
+                    val origin = originOf(url) ?: break
+                    Logd.i("media: retry ${attempt + 1}/4 after failure — refreshAuth($origin)")
+                    Http.refreshAuth(origin)
+                    delay(300L + attempt * 300L)
+                }
+                result
             }
         }
 
     /**
-     * Single download attempt. On challenge HTML / 401-429, optionally
-     * re-run Anubis via [RedlibClient.ensureAuth], soft-delay, and retry once.
+     * Single download attempt. Caller retries with ensureAuth on failure.
+     * OkHttp [Http.client] already re-auths through Anubis walls several times.
      */
     private suspend fun downloadOnce(
         url: String,
         onProgress: ((Int?) -> Unit)?,
-        allowRetry: Boolean,
     ): File? {
         try {
             if (isPlaylistOrNonMediaUrl(url)) {
@@ -99,69 +107,36 @@ object MediaCache {
             tmp.delete()
             val req = okhttp3.Request.Builder().url(url).build()
             var code = 0
-            var bodyBytes: ByteArray? = null
             Http.client.newCall(req).execute().use { resp ->
                 code = resp.code
                 if (!resp.isSuccessful) {
                     Logd.w("media download failed $url -> $code")
-                    bodyBytes = resp.body?.bytes()
-                } else {
-                    val body = resp.body ?: return null
-                    val total = body.contentLength()
-                    body.byteStream().use { input ->
-                        tmp.outputStream().use { output ->
-                            val buf = ByteArray(64 * 1024)
-                            var read: Int
-                            var done = 0L
-                            var lastPct = -1
-                            while (input.read(buf).also { read = it } != -1) {
-                                output.write(buf, 0, read)
-                                done += read
-                                if (total > 0 && onProgress != null) {
-                                    val pct = (done * 100 / total).toInt()
-                                    if (pct != lastPct) { onProgress(pct); lastPct = pct }
-                                }
+                    return null
+                }
+                val body = resp.body ?: return null
+                val total = body.contentLength()
+                body.byteStream().use { input ->
+                    tmp.outputStream().use { output ->
+                        val buf = ByteArray(64 * 1024)
+                        var read: Int
+                        var done = 0L
+                        var lastPct = -1
+                        while (input.read(buf).also { read = it } != -1) {
+                            output.write(buf, 0, read)
+                            done += read
+                            if (total > 0 && onProgress != null) {
+                                val pct = (done * 100 / total).toInt()
+                                if (pct != lastPct) { onProgress(pct); lastPct = pct }
                             }
                         }
                     }
                 }
             }
-            // Rate-limit / challenge recovery path.
-            val challengeBody = when {
-                bodyBytes != null -> bodyBytes!!.toString(Charsets.ISO_8859_1)
-                tmp.exists() && tmp.length() in 1..64_000 ->
-                    tmp.inputStream().use { it.readNBytes(512).toString(Charsets.ISO_8859_1) }
-                else -> ""
-            }
-            val needsAuth = code in listOf(401, 403, 429) ||
-                (challengeBody.isNotEmpty() && (
-                    Anubis.isChallenge(challengeBody) ||
-                        challengeBody.contains("Access Denied", ignoreCase = true) ||
-                        challengeBody.contains("<html", ignoreCase = true)
-                ))
-            if (needsAuth && allowRetry) {
-                tmp.delete()
-                val origin = originOf(url)
-                val now = System.currentTimeMillis()
-                // Soft backoff only when the host pushed back — not on every image.
-                val wait = when (code) {
-                    429 -> 800L
-                    403, 401 -> 400L
-                    else -> 250L
-                }
-                // Avoid stampeding ensureAuth from many parallel Coil/media calls.
-                if (now - lastAuthAttemptMs > 2_000L) {
-                    lastAuthAttemptMs = now
-                    Logd.i("media: host pushback ($code) on $url — ensureAuth($origin)")
-                    Repo.client.ensureAuth(origin)
-                }
-                delay(wait)
-                return downloadOnce(url, onProgress, allowRetry = false)
-            }
             if (code !in 200..299) {
                 tmp.delete()
                 return null
             }
+            // Challenge HTML saved as "media" — reject and let caller re-auth + retry.
             if (!isLikelyMediaFile(tmp)) {
                 Logd.w("media download not usable media, discarding: $url (${tmp.length()} bytes)")
                 tmp.delete()
