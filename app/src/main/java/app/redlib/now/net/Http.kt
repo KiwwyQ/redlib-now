@@ -50,8 +50,30 @@ object Http {
 
     val cookieJar = MemoryCookieJar()
 
-    /** Debounce ensureAuth from parallel Coil/media calls. */
+    /** Last time we finished an ensureAuth attempt (success or fail). */
     val lastAuthMs = AtomicLong(0L)
+
+    /** Serialize ensureAuth so a burst of Coil thumbs shares one solve. */
+    private val authLock = Any()
+
+    /**
+     * Resolve Anubis for [origin]. Concurrent callers block on the same lock
+     * so we don't stampede; we still always try — viewing is the point.
+     */
+    fun refreshAuth(origin: String): Boolean {
+        synchronized(authLock) {
+            return try {
+                Logd.i("Http.refreshAuth: $origin")
+                val ok = app.redlib.now.data.Repo.client.ensureAuth(origin)
+                lastAuthMs.set(System.currentTimeMillis())
+                ok
+            } catch (t: Throwable) {
+                Logd.w("Http.refreshAuth failed: ${t.message}")
+                lastAuthMs.set(System.currentTimeMillis())
+                false
+            }
+        }
+    }
 
     private fun uaInterceptor() = Interceptor { chain ->
         val resp = chain.proceed(
@@ -68,8 +90,8 @@ object Http {
     private fun baseBuilder(): OkHttpClient.Builder =
         OkHttpClient.Builder()
             .cookieJar(cookieJar)
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
             .followRedirects(true)
             .addInterceptor(uaInterceptor())
 
@@ -77,8 +99,8 @@ object Http {
     val rawClient: OkHttpClient = baseBuilder().build()
 
     /**
-     * App + Coil client. On challenge HTML / 401-429 from an instance host,
-     * debounced ensureAuth + single retry.
+     * App + Coil client. On challenge HTML / 401-403-429, re-auth and retry
+     * several times with backoff. Never "give up after one challenge."
      */
     val client: OkHttpClient = baseBuilder()
         .addInterceptor(AnubisRetryInterceptor)
@@ -86,54 +108,62 @@ object Http {
 }
 
 /**
- * If a response is an Anubis wall (or 401/403/429) for a normal page/media
- * request, refresh clearance once and retry the original request.
+ * Keep fetching through Anubis walls on media and page subresources.
+ * Purpose of the app is to view content — a challenge is a hurdle, not a stop.
  */
 private object AnubisRetryInterceptor : Interceptor {
+    private const val MAX_ATTEMPTS = 5
+
     override fun intercept(chain: Interceptor.Chain): Response {
         val request = chain.request()
         val url = request.url
         val path = url.encodedPath
-        if (path.contains("pass-challenge") ||
-            path.contains("/.within.website/") ||
-            request.header("X-Anubis-Retry") != null
-        ) {
+
+        // Never intercept Anubis internals or we'd recurse into pass-challenge.
+        if (path.contains("pass-challenge") || path.contains("/.within.website/")) {
             return chain.proceed(request)
         }
 
-        val response = chain.proceed(request)
-        val code = response.code
-        if (code !in listOf(200, 401, 403, 429)) return response
+        var last: Response? = null
+        for (attempt in 0 until MAX_ATTEMPTS) {
+            last?.close()
+            val response = chain.proceed(request)
+            last = response
+            val code = response.code
 
-        val peek = try {
-            response.peekBody(512).string()
-        } catch (_: Throwable) {
-            return response
-        }
-        val wall = code in listOf(401, 403, 429) || Anubis.looksLikeBotWall(peek)
-        if (!wall) return response
+            // Hard non-auth failures: don't spin forever.
+            if (code !in listOf(200, 401, 403, 429)) return response
 
-        val origin = "${url.scheme}://${url.host}"
-        val now = System.currentTimeMillis()
-        val last = Http.lastAuthMs.get()
-        if (now - last < 2_000L) {
-            try { Thread.sleep(200) } catch (_: InterruptedException) {}
-        } else {
-            Http.lastAuthMs.set(now)
-            Logd.i("AnubisRetry: wall on $url — ensureAuth($origin)")
-            val ok = try {
-                app.redlib.now.data.Repo.client.ensureAuth(origin)
-            } catch (t: Throwable) {
-                Logd.w("AnubisRetry: ensureAuth error ${t.message}")
-                false
+            val peek = try {
+                response.peekBody(1024).string()
+            } catch (_: Throwable) {
+                return response
             }
-            if (!ok) return response
-            try { Thread.sleep(150) } catch (_: InterruptedException) {}
-        }
 
-        response.close()
-        return chain.proceed(
-            request.newBuilder().header("X-Anubis-Retry", "1").build()
-        )
+            val wall = code in listOf(401, 403, 429) || Anubis.looksLikeBotWall(peek)
+            if (!wall) return response
+
+            // Still challenged — refresh cookie and try again.
+            if (attempt >= MAX_ATTEMPTS - 1) {
+                Logd.w("AnubisRetry: giving up after $MAX_ATTEMPTS tries on $url")
+                return response
+            }
+
+            val origin = "${url.scheme}://${url.host}"
+            Logd.i("AnubisRetry: wall code=$code attempt=${attempt + 1}/$MAX_ATTEMPTS on $url")
+            Http.refreshAuth(origin)
+
+            val backoff = when (code) {
+                429 -> 400L + attempt * 400L
+                403, 401 -> 250L + attempt * 250L
+                else -> 200L + attempt * 200L
+            }
+            try {
+                Thread.sleep(backoff.coerceAtMost(2_000L))
+            } catch (_: InterruptedException) {
+                return response
+            }
+        }
+        return last!!
     }
 }
