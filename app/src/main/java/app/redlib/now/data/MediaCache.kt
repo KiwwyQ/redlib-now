@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import app.redlib.now.net.Anubis
 import app.redlib.now.data.Repo
 import java.io.File
@@ -169,6 +170,8 @@ object MediaCache {
                 onProgress(100)
                 return@withContext merged
             }
+            // Stale partial from an interrupted run.
+            if (merged.exists()) merged.delete()
 
             val plan = resolveVideoPlan(url0)
             Logd.i("video plan: kind=${plan.kind} videoCandidates=${plan.videoUrls.size} audioCandidates=${plan.audioUrls.size}")
@@ -198,44 +201,55 @@ object MediaCache {
                 return@withContext null
             }
 
-            // --- download audio track (optional) ---
+            // Video track is enough to play. Audio is optional — never leave the UI
+            // stuck at 70% while audio candidates grind Anubis forever.
+            onProgress(72)
+
             var audioFile: File? = null
-            for ((i, aUrl) in plan.audioUrls.withIndex()) {
-                Logd.i("audio try [$i]: $aUrl")
-                val f = getOrDownload(aUrl) { pct ->
-                    if (pct != null) onProgress(70 + (pct * 0.15).toInt().coerceIn(0, 15))
+            if (plan.audioUrls.isNotEmpty()) {
+                val audioResult = withTimeoutOrNull(25_000L) {
+                    for ((i, aUrl) in plan.audioUrls.take(3).withIndex()) {
+                        Logd.i("audio try [$i]: $aUrl")
+                        onProgress(72 + i * 3)
+                        val f = getOrDownload(aUrl) { pct ->
+                            if (pct != null) onProgress(72 + (pct * 0.15).toInt().coerceIn(0, 15))
+                        }
+                        if (f != null && f.length() > MIN_MEDIA_BYTES) return@withTimeoutOrNull f
+                    }
+                    null
                 }
-                if (f != null && f.length() > MIN_MEDIA_BYTES) {
-                    audioFile = f
-                    break
+                audioFile = audioResult
+                if (audioFile == null) {
+                    Logd.w("video: audio track skipped (timeout or unavailable) — playing video-only")
                 }
             }
 
             onProgress(90)
             val out = File(dir, md5(url0) + ".r.mp4")
-            out.delete()
+            // Drop any previous partial mux from a crashed attempt.
+            if (out.exists() && out.length() < MIN_MEDIA_BYTES) out.delete()
+            else if (out.exists()) out.delete()
 
-            val ok = when {
-                audioFile != null -> remuxAv(videoFile, audioFile, out)
-                else -> remux(videoFile, out)
-            }
+            val remuxed = withTimeoutOrNull(30_000L) {
+                when {
+                    audioFile != null -> remuxAv(videoFile!!, audioFile!!, out)
+                    else -> remux(videoFile!!, out)
+                }
+            } ?: false
 
-            if (ok && out.length() > MIN_MEDIA_BYTES) {
-                // Drop intermediate raws for HLS/CMAF to save space; keep if remux used same path.
-                if (videoFile.absolutePath != out.absolutePath) {
-                    // keep raws only briefly — delete video/audio intermediates for merged HLS
-                    if (plan.kind == PlanKind.HLS_CMAF) {
-                        videoFile.delete()
-                        audioFile?.delete()
-                    }
+            if (remuxed && out.length() > MIN_MEDIA_BYTES) {
+                if (videoFile!!.absolutePath != out.absolutePath && plan.kind == PlanKind.HLS_CMAF) {
+                    videoFile!!.delete()
+                    audioFile?.delete()
                 }
                 onProgress(100)
                 Logd.i("video ready: ${out.name} (${out.length()} bytes, audio=${audioFile != null})")
                 return@withContext out
             }
 
-            // Last resort: play the raw video file even if remux failed.
-            Logd.w("video remux failed; falling back to raw video")
+            // Last resort: play the raw video file even if remux failed/timed out.
+            Logd.w("video remux failed or timed out; falling back to raw video")
+            out.delete()
             onProgress(100)
             videoFile
         }
