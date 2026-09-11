@@ -57,6 +57,7 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import java.io.File
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Full-screen media viewer. Videos play from a local, remuxed copy in our
@@ -77,11 +78,17 @@ fun MediaViewer(title: String, imageUrl: String?, videoUrl: String?, isVideo: Bo
     var videoFile by remember(key) { mutableStateOf<File?>(null) }
     var downloadPct by remember(key) { mutableStateOf<Int?>(null) }
     var downloadFailed by remember(key) { mutableStateOf(false) }
+    var retryToken by remember(key) { mutableStateOf(0) }
     if (isVideo) {
-        LaunchedEffect(key) {
-            videoFile = MediaCache.videoReadyCopy(
-                absoluteUrl(videoUrl ?: imageUrl)
-            ) { pct -> downloadPct = pct }
+        LaunchedEffect(key, retryToken) {
+            downloadFailed = false
+            downloadPct = 0
+            val result = withTimeoutOrNull(180_000L) {
+                MediaCache.videoReadyCopy(
+                    absoluteUrl(videoUrl ?: imageUrl)
+                ) { pct -> downloadPct = pct }
+            }
+            videoFile = result
             downloadPct = null
             if (videoFile == null) downloadFailed = true
         }
@@ -105,10 +112,13 @@ fun MediaViewer(title: String, imageUrl: String?, videoUrl: String?, isVideo: Bo
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         if (downloadFailed) {
                             Text(
-                                "Couldn't save this video.\nConnect to the internet and try again.",
+                                "Couldn't load this video.",
                                 color = Color.White,
                                 style = MaterialTheme.typography.bodyMedium,
                             )
+                            TextButton(onClick = { retryToken++ }) {
+                                Text("Retry", color = Color.White)
+                            }
                         } else {
                             CircularProgressIndicator(color = Color.White)
                             downloadPct?.let {

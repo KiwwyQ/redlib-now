@@ -95,13 +95,36 @@ fun GalleryScreen(
             }
             else -> {
                 val pagerState = rememberPagerState(pageCount = { urls!!.size })
+                // Prefetch current + neighbors into MediaCache (Anubis-aware).
+                LaunchedEffect(pagerState.currentPage, urls) {
+                    val list = urls ?: return@LaunchedEffect
+                    val idx = pagerState.currentPage
+                    for (i in listOf(idx, idx - 1, idx + 1)) {
+                        if (i in list.indices) {
+                            val u = list[i]
+                            if (MediaCache.localUri(u) == null) {
+                                MediaCache.getOrDownload(u)
+                            }
+                        }
+                    }
+                }
                 HorizontalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { page ->
                     val url = urls!![page]
                     var scale by remember(url) { mutableFloatStateOf(1f) }
                     var offset by remember(url) { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+                    var local by remember(url) { mutableStateOf(MediaCache.localUri(url)) }
+                    // Ensure this page has a local (or network) copy; refresh model when ready.
+                    LaunchedEffect(url) {
+                        if (local == null) {
+                            val f = MediaCache.getOrDownload(url)
+                            local = f?.let { "file://${it.absolutePath}" } ?: url
+                        }
+                    }
                     AsyncImage(
                         model = ImageRequest.Builder(LocalContext.current)
-                            .data(MediaCache.localUri(url) ?: url).build(),
+                            .data(local ?: url)
+                            .crossfade(true)
+                            .build(),
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
