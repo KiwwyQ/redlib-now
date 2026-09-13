@@ -27,6 +27,7 @@ object Settings {
     var collapseAutoMod by mutableStateOf(true)      // AutoModerator starts collapsed
     var suggestedCommentSort by mutableStateOf("best")
     var hideReadPosts by mutableStateOf(false)
+    var liveSubSuggestions by mutableStateOf(true)
     var rememberSubredditPosition by mutableStateOf(true)
 
     // ---- Filters ----
@@ -57,6 +58,7 @@ object Settings {
         collapseAutoMod = prefs.getBoolean("collapse_automod", true)
         suggestedCommentSort = prefs.getString("suggested_comment_sort", "best") ?: "best"
         hideReadPosts = prefs.getBoolean("hide_read_posts", false)
+        liveSubSuggestions = prefs.getBoolean("live_sub_suggestions", true)
         rememberSubredditPosition = prefs.getBoolean("remember_position", true)
         hideNsfw = prefs.getBoolean("hide_nsfw", false)
         hideNsfwPreviews = prefs.getBoolean("hide_nsfw_previews", true)
@@ -90,6 +92,7 @@ object Settings {
     fun updateCollapseAutoMod(v: Boolean) { collapseAutoMod = v; put("collapse_automod", v) }
     fun updateSuggestedCommentSort(v: String) { suggestedCommentSort = v; put("suggested_comment_sort", v) }
     fun updateHideReadPosts(v: Boolean) { hideReadPosts = v; put("hide_read_posts", v) }
+    fun updateLiveSubSuggestions(v: Boolean) { liveSubSuggestions = v; put("live_sub_suggestions", v) }
     fun updateRememberPosition(v: Boolean) { rememberSubredditPosition = v; put("remember_position", v) }
     fun updateHideNsfw(v: Boolean) { hideNsfw = v; put("hide_nsfw", v) }
     fun updateHideNsfwPreviews(v: Boolean) { hideNsfwPreviews = v; put("hide_nsfw_previews", v) }
