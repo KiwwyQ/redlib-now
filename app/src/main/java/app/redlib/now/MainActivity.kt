@@ -65,20 +65,28 @@ class MainActivity : ComponentActivity() {
                 var showBrowse by remember { mutableStateOf(false) }
                 var postSearchSub by remember { mutableStateOf<String?>(null) }
                 var postSearchOpen by remember { mutableStateOf(false) }
+                // In-feed sub search survives opening a post (hoisted out of FeedScreen).
+                var feedSearchExpanded by remember { mutableStateOf(false) }
+                var feedSearchQuery by remember { mutableStateOf("") }
+                var feedSearchResults by remember { mutableStateOf<List<app.redlib.now.model.Post>?>(null) }
+                var feedSearchError by remember { mutableStateOf<String?>(null) }
                 var commentMedia by remember { mutableStateOf<Triple<String, String?, Boolean>?>(null) }
                 var galleryViewer by remember { mutableStateOf<Pair<String, String>?>(null) }
 
                 when {
+                    // Overlay screens first so underlays (Saved / search / feed) stay alive.
                     galleryViewer != null -> app.redlib.now.ui.GalleryScreen(
                         permalink = galleryViewer!!.first,
                         title = galleryViewer!!.second,
                         onBack = { galleryViewer = null },
                         onOpenComments = {
+                            val perm = galleryViewer!!.first
+                            val title = galleryViewer!!.second
                             galleryViewer = null
                             commentsPost = Post(
-                                id = "gallery-" + galleryViewer!!.first,
+                                id = "gallery-" + perm,
                                 subreddit = "", author = null,
-                                title = galleryViewer!!.second, permalink = galleryViewer!!.first,
+                                title = title, permalink = perm,
                                 flair = null, selfTextPreview = null, imageUrl = null, videoUrl = null,
                                 isVideo = false, score = null, commentCount = null, timeAgo = null, nsfw = false,
                             )
@@ -91,21 +99,38 @@ class MainActivity : ComponentActivity() {
                         isVideo = commentMedia!!.third,
                         onClose = { commentMedia = null },
                     )
+                    viewerPost != null -> MediaViewer(
+                        post = viewerPost!!,
+                        onClose = { viewerPost = null },
+                    )
+                    commentsPost != null -> CommentsScreen(
+                        post = commentsPost!!,
+                        onBack = { commentsPost = null },
+                        onOpenMedia = { viewerPost = it },
+                        onOpenUser = { userProfile = it },
+                        onOpenCommentMedia = { url, isVideo -> commentMedia = Triple("Comment media", url, isVideo) },
+                    )
+                    userProfile != null -> UserScreen(
+                        username = userProfile!!,
+                        onBack = { userProfile = null },
+                        onOpenPost = { post ->
+                            if (post.isGallery || post.imageUrl == null) commentsPost = post else viewerPost = post
+                        },
+                        onOpenComments = { commentsPost = it },
+                        onOpenMedia = { viewerPost = it },
+                        onOpenSubreddit = { sub ->
+                            userProfile = null
+                            vm.load("/r/$sub")
+                        },
+                    )
                     showSettings -> SettingsScreen(onBack = { showSettings = false })
                     showSaved -> SavedScreen(
                         onBack = { showSaved = false },
                         onOpenPost = { post ->
-                            showSaved = false
                             if (post.isGallery || post.imageUrl == null || post.externalUrl != null) commentsPost = post else viewerPost = post
                         },
-                        onOpenComments = {
-                            showSaved = false
-                            commentsPost = it
-                        },
-                        onOpenMedia = {
-                            showSaved = false
-                            viewerPost = it
-                        },
+                        onOpenComments = { commentsPost = it },
+                        onOpenMedia = { viewerPost = it },
                         onOpenSubreddit = { sub ->
                             showSaved = false
                             vm.load("/r/$sub")
@@ -122,7 +147,6 @@ class MainActivity : ComponentActivity() {
                         subreddit = postSearchSub,
                         onBack = { postSearchOpen = false },
                         onOpenPost = { post ->
-                            postSearchOpen = false
                             if (post.isGallery || post.imageUrl == null || post.externalUrl != null) commentsPost = post else viewerPost = post
                         },
                         onOpenComments = { commentsPost = it },
@@ -131,31 +155,6 @@ class MainActivity : ComponentActivity() {
                             postSearchOpen = false
                             vm.load("/r/$sub")
                         },
-                    )
-                    viewerPost != null -> MediaViewer(
-                        post = viewerPost!!,
-                        onClose = { viewerPost = null },
-                    )
-                    userProfile != null -> UserScreen(
-                        username = userProfile!!,
-                        onBack = { userProfile = null },
-                        onOpenPost = { post ->
-                            userProfile = null
-                            if (post.isGallery || post.imageUrl == null) commentsPost = post else viewerPost = post
-                        },
-                        onOpenComments = { commentsPost = it },
-                        onOpenMedia = { viewerPost = it },
-                        onOpenSubreddit = { sub ->
-                            userProfile = null
-                            vm.load("/r/$sub")
-                        },
-                    )
-                    commentsPost != null -> CommentsScreen(
-                        post = commentsPost!!,
-                        onBack = { commentsPost = null },
-                        onOpenMedia = { viewerPost = it },
-                        onOpenUser = { userProfile = it },
-                        onOpenCommentMedia = { url, isVideo -> commentMedia = Triple("Comment media", url, isVideo) },
                     )
                     showSearch -> SearchScreen(
                         onDismiss = { showSearch = false },
@@ -196,9 +195,26 @@ class MainActivity : ComponentActivity() {
                             postSearchSub = sub
                             postSearchOpen = true
                         },
-                        onOpenFeed = { vm.load(it) },
+                        onOpenFeed = { path ->
+                            // Leaving this sub (or going home) clears in-feed search.
+                            if (path != vm.currentPath) {
+                                feedSearchExpanded = false
+                                feedSearchQuery = ""
+                                feedSearchResults = null
+                                feedSearchError = null
+                            }
+                            vm.load(path)
+                        },
                         statePositions = vm.positions,
                         onExitApp = { finish() },
+                        searchExpanded = feedSearchExpanded,
+                        onSearchExpandedChange = { feedSearchExpanded = it },
+                        searchQuery = feedSearchQuery,
+                        onSearchQueryChange = { feedSearchQuery = it },
+                        searchResults = feedSearchResults,
+                        onSearchResultsChange = { feedSearchResults = it },
+                        searchError = feedSearchError,
+                        onSearchErrorChange = { feedSearchError = it },
                     )
                 }
 
