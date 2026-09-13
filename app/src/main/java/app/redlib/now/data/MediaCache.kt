@@ -540,4 +540,16 @@ object MediaCache {
         val cutoff = System.currentTimeMillis() - RETENTION_MS
         dir.listFiles()?.forEach { if (it.lastModified() < cutoff) it.delete() }
     }
+
+    /** Total bytes used by the on-disk media cache (0 if not initialized). */
+    fun totalBytes(): Long {
+        if (!this::dir.isInitialized) return 0L
+        return dir.listFiles()?.sumOf { it.length() } ?: 0L
+    }
+
+    /** Delete all cached media files. Safe to call from any thread. */
+    fun clearAll() {
+        if (!this::dir.isInitialized) return
+        dir.listFiles()?.forEach { it.delete() }
+    }
 }
