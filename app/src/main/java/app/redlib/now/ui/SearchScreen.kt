@@ -18,6 +18,11 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.redlib.now.data.Repo
+import app.redlib.now.data.Settings
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.jsoup.Jsoup
 
 /**
  * Subreddit finder only.
@@ -34,7 +39,42 @@ fun SearchScreen(
     BackHandler(onBack = onDismiss)
     var query by remember { mutableStateOf("") }
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val scope = rememberCoroutineScope()
+    var liveSuggestions by remember { mutableStateOf<List<String>>(emptyList()) }
+    var liveJob by remember { mutableStateOf<Job?>(null) }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
+
+    fun requestLiveSuggestions(raw: String) {
+        liveJob?.cancel()
+        val term = raw.trim().removePrefix("r/").removePrefix("/r/")
+        if (!Settings.liveSubSuggestions || term.length < 2) {
+            liveSuggestions = emptyList()
+            return
+        }
+        liveJob = scope.launch {
+            delay(350)
+            try {
+                val encoded = java.net.URLEncoder.encode(term, "UTF-8")
+                val resp = Repo.client.fetch("/search?q=$encoded&type=sr")
+                val doc = Jsoup.parse(resp.html, resp.baseUrl)
+                val names = doc.select("a.search_subreddit")
+                    .mapNotNull { a ->
+                        a.selectFirst(".search_subreddit_name")?.text()
+                            ?.trim()
+                            ?.removePrefix("r/")
+                            ?.removePrefix("/r/")
+                            ?.ifBlank { null }
+                            ?: a.attr("href").trim().removePrefix("/r/").removeSuffix("/").ifBlank { null }
+                    }
+                    .map { it.lowercase() }
+                    .distinct()
+                    .take(12)
+                liveSuggestions = names
+            } catch (_: Throwable) {
+                liveSuggestions = emptyList()
+            }
+        }
+    }
 
     fun open(sub: String) {
         val normalized = sub.trim().removePrefix("r/").removePrefix("/r/").lowercase()
@@ -60,7 +100,7 @@ fun SearchScreen(
                 }
                 OutlinedTextField(
                     value = query,
-                    onValueChange = { query = it },
+                    onValueChange = { query = it; requestLiveSuggestions(it) },
                     placeholder = { Text("Search subreddits…") },
                     singleLine = true,
                     shape = MaterialTheme.shapes.extraLarge,
@@ -75,6 +115,19 @@ fun SearchScreen(
             }
 
             LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
+                if (liveSuggestions.isNotEmpty()) {
+                    item { SectionLabel("Suggestions") }
+                    items(liveSuggestions, key = { "live:$it" }) { sub ->
+                        Text(
+                            "r/$sub",
+                            style = MaterialTheme.typography.bodyLarge,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { open(sub) }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                        )
+                    }
+                }
                 if (searchHistory.isNotEmpty()) {
                     item { SectionLabel("Recent searches") }
                     items(searchHistory, key = { "h:$it" }) { sub ->

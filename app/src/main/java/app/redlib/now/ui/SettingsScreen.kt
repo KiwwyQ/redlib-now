@@ -46,6 +46,13 @@ fun SettingsScreen(onBack: () -> Unit) {
             title = { Text("Settings", fontWeight = FontWeight.Bold) },
         )
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
+            item { Section("Search") }
+            item {
+                SwitchRow(
+                    "Live subreddit suggestions",
+                    Settings.liveSubSuggestions,
+                ) { Settings.updateLiveSubSuggestions(it) }
+            }
             item { Section("Instance") }
             item { InstancePicker() }
 
@@ -212,7 +219,7 @@ private fun InstancePicker() {
                             InstanceRow(
                                 label = host,
                                 subtitle = when {
-                                    !auto && preferred == url -> "pinned"
+                                    !auto && preferred == url -> "selected"
                                     active == url -> "in use"
                                     else -> null
                                 },

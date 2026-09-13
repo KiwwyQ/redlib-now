@@ -58,6 +58,15 @@ fun FeedScreen(
     onMarkRead: (String) -> Unit = {},
     statePositions: MutableMap<String, Pair<Int, Int>> = mutableMapOf(),
     onExitApp: () -> Unit = {},
+    // Hoisted so opening a post does not wipe in-sub search.
+    searchExpanded: Boolean = false,
+    onSearchExpandedChange: (Boolean) -> Unit = {},
+    searchQuery: String = "",
+    onSearchQueryChange: (String) -> Unit = {},
+    searchResults: List<Post>? = null,
+    onSearchResultsChange: (List<Post>?) -> Unit = {},
+    searchError: String? = null,
+    onSearchErrorChange: (String?) -> Unit = {},
 ) {
     val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -65,12 +74,19 @@ fun FeedScreen(
     val snackHost = remember { SnackbarHostState() }
     var lastBackAt by remember { mutableStateOf(0L) }
 
-    // In-subreddit search (docked under the app bar — not a separate screen).
-    var searchExpanded by remember { mutableStateOf(false) }
-    var searchQuery by remember { mutableStateOf("") }
-    var searchResults by remember { mutableStateOf<List<Post>?>(null) }
     var searchBusy by remember { mutableStateOf(false) }
-    var searchError by remember { mutableStateOf<String?>(null) }
+
+    // If we left the sub context, parent should clear; belt-and-suspenders here too.
+    LaunchedEffect(currentFeed) {
+        val inSub = currentFeed.startsWith("/r/") &&
+            currentFeed.removePrefix("/r/").removeSuffix("/") !in setOf("all", "popular", "")
+        if (!inSub && searchExpanded) {
+            onSearchExpandedChange(false)
+            onSearchQueryChange("")
+            onSearchResultsChange(null)
+            onSearchErrorChange(null)
+        }
+    }
 
     // System back: close drawer first, else double-press to exit on main feed.
     BackHandler {
@@ -280,11 +296,12 @@ fun FeedScreen(
                         }
                         IconButton(onClick = {
                             if (subName != null) {
-                                searchExpanded = !searchExpanded
-                                if (!searchExpanded) {
-                                    searchQuery = ""
-                                    searchResults = null
-                                    searchError = null
+                                val next = !searchExpanded
+                                onSearchExpandedChange(next)
+                                if (!next) {
+                                    onSearchQueryChange("")
+                                    onSearchResultsChange(null)
+                                    onSearchErrorChange(null)
                                 }
                             } else {
                                 onOpenSearch()
@@ -323,7 +340,7 @@ fun FeedScreen(
                     ) {
                         OutlinedTextField(
                             value = searchQuery,
-                            onValueChange = { searchQuery = it },
+                            onValueChange = { onSearchQueryChange(it) },
                             placeholder = { Text("Search r/$sub…") },
                             singleLine = true,
                             shape = MaterialTheme.shapes.extraLarge,
@@ -335,26 +352,25 @@ fun FeedScreen(
                                 val q = searchQuery.trim()
                                 if (q.isEmpty()) return@IconButton
                                 searchBusy = true
-                                searchError = null
+                                onSearchErrorChange(null)
                                 scope.launch {
                                     try {
                                         val encoded = java.net.URLEncoder.encode(q, "UTF-8")
                                         val path = "/r/$sub/search?q=$encoded&restrict_sr=on"
                                         val resp = Repo.client.fetch(path)
                                         if (resp.html.contains("Failed to parse page JSON", ignoreCase = true)) {
-                                            searchResults = emptyList()
-                                            searchError = "Search unavailable on this instance"
+                                            onSearchResultsChange(emptyList())
+                                            onSearchErrorChange("Search unavailable on this instance")
                                         } else {
                                             val parsed = PostParser.parseFeed(resp.html, resp.baseUrl)
                                                 .filter { app.redlib.now.data.Settings.postVisible(it) }
                                                 .filter { it.subreddit.equals(sub, ignoreCase = true) }
-                                            searchResults = parsed
-                                            if (parsed.isEmpty()) searchError = "No results"
-                                            else searchError = null
+                                            onSearchResultsChange(parsed)
+                                            onSearchErrorChange(if (parsed.isEmpty()) "No results" else null)
                                         }
-                                    } catch (t: Throwable) {
-                                        searchResults = emptyList()
-                                        searchError = t.message ?: "Search failed"
+                                    } catch (err: Throwable) {
+                                        onSearchResultsChange(emptyList())
+                                        onSearchErrorChange(err.message ?: "Search failed")
                                     } finally {
                                         searchBusy = false
                                     }
