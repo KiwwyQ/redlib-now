@@ -202,7 +202,7 @@ fun SearchScreen(
                             "${Repo.SUGGESTIONS.size} communities — start typing to narrow down, or browse the full grid from the drawer.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 16.dp, bottom = 4.dp),
+                            modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp),
                         )
                     }
                     items(browseList.take(24), key = { "b:$it" }) { sub ->
