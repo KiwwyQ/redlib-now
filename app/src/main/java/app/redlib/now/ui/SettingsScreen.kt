@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.redlib.now.data.Repo
+import app.redlib.now.data.MediaCache
 import app.redlib.now.data.Settings
 import app.redlib.now.net.Http
 import app.redlib.now.net.InstanceDiscovery
@@ -48,11 +49,33 @@ fun SettingsScreen(onBack: () -> Unit) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 32.dp)) {
             item { Section("Search") }
             item {
-                SwitchRow(
-                    "Live subreddit suggestions",
-                    Settings.liveSubSuggestions,
-                ) { Settings.updateLiveSubSuggestions(it) }
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { Settings.updateLiveSubSuggestions(!Settings.liveSubSuggestions) },
+                    ) {
+                        Text(
+                            "Live subreddit suggestions",
+                            modifier = Modifier.weight(1f),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Switch(
+                            checked = Settings.liveSubSuggestions,
+                            onCheckedChange = { Settings.updateLiveSubSuggestions(it) },
+                        )
+                    }
+                    Text(
+                        "Uses reddtastic.com public search API for richer matches",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                        modifier = Modifier.padding(end = 48.dp, bottom = 4.dp),
+                    )
+                }
             }
+            item { Section("Storage") }
+            item { CacheRow() }
             item { Section("Instance") }
             item { InstancePicker() }
 
@@ -325,6 +348,58 @@ private fun probeInstance(base: String): InstanceStatus {
     } catch (_: Throwable) {
         InstanceStatus.Down
     }
+}
+
+@Composable
+private fun CacheRow() {
+    val scope = rememberCoroutineScope()
+    var sizeText by remember { mutableStateOf("…") }
+    var clearing by remember { mutableStateOf(false) }
+    fun refresh() {
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) { MediaCache.totalBytes() }
+            sizeText = formatBytes(bytes)
+        }
+    }
+    LaunchedEffect(Unit) { refresh() }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Media cache", style = MaterialTheme.typography.bodyLarge)
+            Text(
+                sizeText,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            )
+        }
+        TextButton(
+            enabled = !clearing,
+            onClick = {
+                clearing = true
+                scope.launch {
+                    withContext(Dispatchers.IO) { MediaCache.clearAll() }
+                    refresh()
+                    clearing = false
+                }
+            },
+        ) {
+            Text(if (clearing) "Clearing…" else "Clear cache")
+        }
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    val kb = bytes / 1024.0
+    if (kb < 1024) return "%.1f KB".format(kb)
+    val mb = kb / 1024.0
+    if (mb < 1024) return "%.1f MB".format(mb)
+    val gb = mb / 1024.0
+    return "%.2f GB".format(gb)
 }
 
 @Composable

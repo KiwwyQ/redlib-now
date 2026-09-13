@@ -19,17 +19,23 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.redlib.now.data.Repo
 import app.redlib.now.data.Settings
+import app.redlib.now.net.Http
+import app.redlib.now.net.Logd
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import org.jsoup.Jsoup
+import kotlinx.coroutines.withContext
+import okhttp3.Request
+import org.json.JSONObject
 
 /**
  * Subreddit finder only.
  *
- * - Search history = recent lookups (not pinned). Delete forgets the entry only.
- * - Pin / unpin lives exclusively on the subreddit feed top bar.
- * - Pinned subs are intentionally omitted here — use the drawer sidebar.
+ * Order while typing: Go to r/q → Browse (defaults ∪ live, deduped) → Recent.
+ * Empty query: Recent first → Browse defaults.
+ *
+ * Live hits come from reddtastic public search API when the setting is on.
  */
 @Composable
 fun SearchScreen(
@@ -40,7 +46,8 @@ fun SearchScreen(
     var query by remember { mutableStateOf("") }
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
     val scope = rememberCoroutineScope()
-    var liveSuggestions by remember { mutableStateOf<List<String>>(emptyList()) }
+    // name -> subscriber count (0 if unknown / static only)
+    var liveHits by remember { mutableStateOf<List<Pair<String, Long>>>(emptyList()) }
     var liveJob by remember { mutableStateOf<Job?>(null) }
     LaunchedEffect(Unit) { focusRequester.requestFocus() }
 
@@ -48,53 +55,75 @@ fun SearchScreen(
         liveJob?.cancel()
         val term = raw.trim().removePrefix("r/").removePrefix("/r/")
         if (!Settings.liveSubSuggestions || term.length < 2) {
-            liveSuggestions = emptyList()
+            liveHits = emptyList()
             return
         }
         liveJob = scope.launch {
             delay(350)
-            try {
-                val encoded = java.net.URLEncoder.encode(term, "UTF-8")
-                val resp = Repo.client.fetch("/search?q=$encoded&type=sr")
-                val doc = Jsoup.parse(resp.html, resp.baseUrl)
-                val names = doc.select("a.search_subreddit")
-                    .mapNotNull { a ->
-                        a.selectFirst(".search_subreddit_name")?.text()
-                            ?.trim()
-                            ?.removePrefix("r/")
-                            ?.removePrefix("/r/")
-                            ?.ifBlank { null }
-                            ?: a.attr("href").trim().removePrefix("/r/").removeSuffix("/").ifBlank { null }
-                    }
-                    .map { it.lowercase() }
-                    .distinct()
-                    .take(12)
-                liveSuggestions = names
-            } catch (_: Throwable) {
-                liveSuggestions = emptyList()
+            liveHits = withContext(Dispatchers.IO) {
+                fetchReddtasticSubs(term)
             }
         }
     }
 
     fun open(sub: String) {
-        val normalized = sub.trim().removePrefix("r/").removePrefix("/r/").lowercase()
+        val normalized = sub.trim().removePrefix("r/").removePrefix("/r/")
+            .filter { it.isLetterOrDigit() || it == '_' }
+            .lowercase()
         if (normalized.isEmpty()) return
-        // Record search history only (never pins).
         Repo.recordSearch(normalized)
         onOpenSubreddit(normalized)
     }
 
     val q = query.trim().removePrefix("r/").removePrefix("/r/")
+    val qLower = q.lowercase()
+    val typing = qLower.length >= 1
     val searchHistory = Repo.searchHistoryState
-    val filteredSuggestions = Repo.SUGGESTIONS.filter {
-        it.contains(q, ignoreCase = true) &&
-            it !in searchHistory &&
-            it !in Repo.pinnedState
+
+    // Browse: static matches ∪ live, no dups, prefer higher subscriber counts.
+    val browseList: List<String> = remember(qLower, liveHits, searchHistory) {
+        val liveMap = linkedMapOf<String, Long>()
+        for ((name, subs) in liveHits) {
+            val n = name.lowercase()
+            if (!isValidSubName(n)) continue
+            liveMap[n] = maxOf(liveMap[n] ?: 0L, subs)
+        }
+        val staticMatches = if (qLower.isEmpty()) {
+            Repo.SUGGESTIONS
+        } else {
+            Repo.SUGGESTIONS.filter { it.contains(qLower, ignoreCase = true) }
+        }
+        val merged = linkedMapOf<String, Long>()
+        for (s in staticMatches) {
+            val n = s.lowercase()
+            if (!isValidSubName(n)) continue
+            merged[n] = liveMap[n] ?: 0L
+        }
+        for ((n, subs) in liveMap) {
+            merged[n] = maxOf(merged[n] ?: 0L, subs)
+        }
+        // Drop exact query from browse if we show "Go to" separately — still ok to list.
+        merged.entries
+            .sortedWith(
+                compareByDescending<Map.Entry<String, Long>> { it.value }
+                    .thenBy { it.key },
+            )
+            .map { it.key }
+            .filter { it !in Repo.pinnedState.map { p -> p.lowercase() } }
+            .take(40)
     }
 
     Surface(color = MaterialTheme.colorScheme.background, modifier = Modifier.fillMaxSize()) {
-        Column(Modifier.padding(top = 12.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 4.dp)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(top = 4.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            ) {
                 IconButton(onClick = onDismiss) {
                     Icon(Icons.Filled.Close, contentDescription = "Close")
                 }
@@ -115,123 +144,126 @@ fun SearchScreen(
             }
 
             LazyColumn(contentPadding = PaddingValues(vertical = 8.dp)) {
-                if (liveSuggestions.isNotEmpty()) {
-                    item { SectionLabel("Suggestions") }
-                    items(liveSuggestions, key = { "live:$it" }) { sub ->
-                        Text(
-                            "r/$sub",
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { open(sub) }
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                        )
-                    }
-                }
-                if (searchHistory.isNotEmpty()) {
-                    item { SectionLabel("Recent searches") }
-                    items(searchHistory, key = { "h:$it" }) { sub ->
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { open(sub) }
-                                .padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.History,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
-                                "r/$sub",
-                                style = MaterialTheme.typography.bodyLarge,
-                                modifier = Modifier.weight(1f).padding(start = 12.dp),
-                            )
-                            IconButton(
-                                onClick = { Repo.removeFromSearchHistory(sub) },
-                                modifier = Modifier.size(36.dp),
+                if (typing) {
+                    // 1) Go to r/{q}
+                    item {
+                        val target = qLower.filter { it.isLetterOrDigit() || it == '_' }
+                        if (target.isNotEmpty()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable { open(target) }
+                                    .padding(horizontal = 16.dp, vertical = 10.dp),
                             ) {
                                 Icon(
-                                    Icons.Filled.Delete,
-                                    contentDescription = "Remove r/$sub from search history",
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    Icons.Filled.Search,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
                                     modifier = Modifier.size(18.dp),
+                                )
+                                Text(
+                                    "Go to r/$target",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(start = 12.dp),
                                 )
                             }
                         }
                     }
-                }
 
-                item {
-                    SectionLabel(
-                        if (q.isEmpty()) "Browse (type to filter ${Repo.SUGGESTIONS.size} subreddits)"
-                        else "Browse",
-                    )
-                }
-                if (q.isEmpty()) {
+                    // 2) Browse (defaults + live, deduped, by subscribers)
+                    item { SectionLabel("Browse") }
+                    items(browseList, key = { "b:$it" }) { sub ->
+                        BrowseRow(sub) { open(sub) }
+                    }
+
+                    // 3) Recent
+                    if (searchHistory.isNotEmpty()) {
+                        item { SectionLabel("Recent searches") }
+                        items(searchHistory, key = { "h:$it" }) { sub ->
+                            HistoryRow(sub, onOpen = { open(sub) }, onDelete = { Repo.removeFromSearchHistory(sub) })
+                        }
+                    }
+                } else {
+                    // Empty: Recent first, then Browse defaults
+                    if (searchHistory.isNotEmpty()) {
+                        item { SectionLabel("Recent searches") }
+                        items(searchHistory, key = { "h:$it" }) { sub ->
+                            HistoryRow(sub, onOpen = { open(sub) }, onDelete = { Repo.removeFromSearchHistory(sub) })
+                        }
+                    }
+                    item {
+                        SectionLabel("Browse (type to filter ${Repo.SUGGESTIONS.size} subreddits)")
+                    }
                     item {
                         Text(
                             "${Repo.SUGGESTIONS.size} communities — start typing to narrow down, or browse the full grid from the drawer.",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 16.dp),
+                            modifier = Modifier.padding(horizontal = 16.dp, bottom = 4.dp),
                         )
                     }
-                }
-                items(filteredSuggestions.take(24), key = { "s:$it" }) { sub ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { open(sub) }
-                            .padding(horizontal = 16.dp, vertical = 10.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Search,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(18.dp),
-                        )
-                        Text(
-                            "r/$sub",
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.padding(start = 12.dp),
-                        )
-                    }
-                }
-                if (q.isNotBlank() &&
-                    !filteredSuggestions.any { it.equals(q, true) } &&
-                    !searchHistory.any { it.equals(q, true) } &&
-                    !Repo.pinnedState.any { it.equals(q, true) }
-                ) {
-                    val target = q.lowercase()
-                    item {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { open(target) }
-                                .padding(horizontal = 16.dp, vertical = 10.dp),
-                        ) {
-                            Icon(
-                                Icons.Filled.Search,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(18.dp),
-                            )
-                            Text(
-                                "Go to r/$target",
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.padding(start = 12.dp),
-                            )
-                        }
+                    items(browseList.take(24), key = { "b:$it" }) { sub ->
+                        BrowseRow(sub) { open(sub) }
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun BrowseRow(sub: String, onClick: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+    ) {
+        Icon(
+            Icons.Filled.Search,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            "r/$sub",
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.padding(start = 12.dp),
+        )
+    }
+}
+
+@Composable
+private fun HistoryRow(sub: String, onOpen: () -> Unit, onDelete: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onOpen)
+            .padding(start = 16.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+    ) {
+        Icon(
+            Icons.Filled.History,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            "r/$sub",
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.weight(1f).padding(start = 12.dp),
+        )
+        IconButton(onClick = onDelete, modifier = Modifier.size(36.dp)) {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = "Remove r/$sub from search history",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(18.dp),
+            )
         }
     }
 }
@@ -244,4 +276,43 @@ private fun SectionLabel(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
     )
+}
+
+private val SUB_NAME = Regex("^[A-Za-z0-9_]{2,50}$")
+
+private fun isValidSubName(name: String): Boolean =
+    SUB_NAME.matches(name) && !name.contains('?') && '=' !in name
+
+/**
+ * Public reddtastic subreddit search — richer than Redlib type=sr.
+ * Sorted by redditSubscribers descending.
+ */
+private fun fetchReddtasticSubs(query: String): List<Pair<String, Long>> {
+    return try {
+        val encoded = java.net.URLEncoder.encode(query, "UTF-8")
+        val url = "https://reddtastic.com/api/reddit/subreddits/search?q=$encoded&page=1"
+        val req = Request.Builder().url(url).header("Accept", "application/json").build()
+        Http.client.newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                Logd.w("reddtastic search HTTP ${resp.code}")
+                return emptyList()
+            }
+            val body = resp.body?.string().orEmpty()
+            if (body.isEmpty()) return emptyList()
+            val root = JSONObject(body)
+            val items = root.optJSONArray("items") ?: return emptyList()
+            val out = ArrayList<Pair<String, Long>>(items.length())
+            for (i in 0 until items.length()) {
+                val o = items.optJSONObject(i) ?: continue
+                val name = o.optString("nameDisplay", "").trim()
+                if (!isValidSubName(name)) continue
+                val subs = o.optLong("redditSubscribers", 0L)
+                out += name.lowercase() to subs
+            }
+            out.sortedByDescending { it.second }.distinctBy { it.first }.take(40)
+        }
+    } catch (t: Throwable) {
+        Logd.w("reddtastic search failed: ${t.message}")
+        emptyList()
+    }
 }
