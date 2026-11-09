@@ -7,7 +7,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Fetches Redlib pages, transparently handling:
- *  - Anubis proof-of-work challenges (solved on-device, cookie cached),
+ *  - Anubis bot checks (solved via hidden WebView so WASM/argon2id challenges work; cookies cached),
  *  - load-balancer meta-refresh redirects between instance backends,
  *  - instance rotation when an instance is unreachable or refuses us (403),
  *  - optional user-pinned instance from [app.redlib.now.data.Settings.preferredInstance].
@@ -135,22 +135,21 @@ class RedlibClient(
             Logd.d("hop#$hops status=$code len=${body?.length ?: 0} cookies=${run { val h = okhttp3.HttpUrl.Companion.run { url.toHttpUrl() }; Http.cookieJar.loadForRequest(h).map { it.name } }}")
             if (body == null) return null
 
-            // 1. Anubis challenge?
+            // 1. Anubis challenge?  → solve via hidden WebView (WASM/argon2id capable)
             if (Anubis.isChallenge(body)) {
-                val challenge = Anubis.extractChallenge(body)
-                if (challenge == null) {
-                    Logd.w("hop#$hops: Anubis page but challenge unreadable; first 300 chars: ${body.take(300)}")
-                    throw InstanceDeadException(IllegalStateException("Challenge unreadable"))
-                }
+                Logd.i("hop#$hops: Anubis challenge page detected, starting WebView solver")
                 val t0 = System.currentTimeMillis()
-                val solution = kotlinx.coroutines.runBlocking { Anubis.solveOffMain(challenge) }
-                Logd.i("hop#$hops: Anubis challenge id=${challenge.id} algo=${challenge.algorithm} diff=${challenge.difficulty} " +
-                    "solved nonce=${solution.nonce} in ${System.currentTimeMillis() - t0}ms")
-                val passUrl = Anubis.passChallengeUrl(currentBase, currentPath, challenge, solution, 500)
-                Http.rawClient.newCall(Request.Builder().url(passUrl).build()).execute().use { pass ->
-                    val passBody = pass.body?.string().orEmpty()
-                    Logd.i("hop#$hops: pass-challenge status=${pass.code} len=${passBody.length} " +
-                        "cookiesNow=${run { val h = okhttp3.HttpUrl.Companion.run { url.toHttpUrl() }; Http.cookieJar.loadForRequest(h).map { it.name } }}")
+                val ok = kotlinx.coroutines.runBlocking {
+                    Anubis.solveWithWebView(currentBase)
+                }
+                Logd.i(
+                    "hop#$hops: Anubis WebView solve ${if (ok) "OK" else "FAILED"} " +
+                        "in ${System.currentTimeMillis() - t0}ms",
+                )
+                if (!ok) {
+                    throw InstanceDeadException(
+                        IllegalStateException("Anubis WebView solve failed after retries"),
+                    )
                 }
                 continue // retry the original page, now with the clearance cookie
             }
@@ -198,45 +197,36 @@ class RedlibClient(
     fun ensureAuth(base: String?): Boolean {
         val b = base?.trim()?.removeSuffix("/") ?: return false
         if (b.isEmpty()) return false
-        // A couple of passes — challenge pages sometimes race with cookie settle.
-        repeat(2) { pass ->
-            try {
-                val url = "$b/"
-                val body = Http.rawClient.newCall(Request.Builder().url(url).build())
-                    .execute().use { it.body?.string().orEmpty() }
-                if (body.isEmpty()) return@repeat
-                if (!Anubis.isChallenge(body) && "Access Denied" !in body) {
-                    return true
-                }
-                val challenge = Anubis.extractChallenge(body)
-                if (challenge == null) {
-                    Logd.w("ensureAuth: challenge unreadable / access denied on $b (pass ${pass + 1})")
-                    Thread.sleep(300)
-                    return@repeat
-                }
-                val t0 = System.currentTimeMillis()
-                val solution = kotlinx.coroutines.runBlocking { Anubis.solveOffMain(challenge) }
-                Logd.i(
-                    "ensureAuth: solved ${challenge.id} algo=${challenge.algorithm} " +
-                        "in ${System.currentTimeMillis() - t0}ms (pass ${pass + 1})",
-                )
-                val passUrl = Anubis.passChallengeUrl(b, "/", challenge, solution, 500)
-                Http.rawClient.newCall(Request.Builder().url(passUrl).build()).execute().use { resp ->
-                    Logd.i("ensureAuth: pass-challenge status=${resp.code}")
-                }
-                Thread.sleep(200)
-                // Verify we can fetch without a wall.
-                val check = Http.rawClient.newCall(Request.Builder().url(url).build())
-                    .execute().use { it.body?.string().orEmpty() }
-                if (check.isNotEmpty() && !Anubis.isChallenge(check) && "Access Denied" !in check) {
-                    return true
-                }
-            } catch (t: Throwable) {
-                Logd.w("ensureAuth failed for $b: ${t.message}")
-                Thread.sleep(300)
+        try {
+            val url = "$b/"
+            val body = Http.rawClient.newCall(Request.Builder().url(url).build())
+                .execute().use { it.body?.string().orEmpty() }
+            if (body.isEmpty()) return false
+            if (!Anubis.isChallenge(body) && "Access Denied" !in body) {
+                return true
             }
+            Logd.i("ensureAuth: Anubis challenge detected on $b, starting WebView solver")
+            val t0 = System.currentTimeMillis()
+            val ok = kotlinx.coroutines.runBlocking {
+                Anubis.solveWithWebView(b)
+            }
+            Logd.i(
+                "ensureAuth: WebView solve ${if (ok) "OK" else "FAILED"} " +
+                    "in ${System.currentTimeMillis() - t0}ms",
+            )
+            if (!ok) return false
+            // Verify we can fetch without a wall.
+            Thread.sleep(200)
+            val check = Http.rawClient.newCall(Request.Builder().url(url).build())
+                .execute().use { it.body?.string().orEmpty() }
+            return check.isNotEmpty() &&
+                !Anubis.isChallenge(check) &&
+                "Access Denied" !in check
+        } catch (t: Throwable) {
+            Logd.w("ensureAuth failed for $b: ${t.message}")
+            return false
         }
-        return false
     }
 }
+
 

@@ -95,7 +95,7 @@ object Http {
             .followRedirects(true)
             .addInterceptor(uaInterceptor())
 
-    /** No Anubis auto-retry — for pass-challenge and ensureAuth only. */
+    /** No Anubis auto-retry — used by ensureAuth / challenge detection only. */
     val rawClient: OkHttpClient = baseBuilder().build()
 
     /**

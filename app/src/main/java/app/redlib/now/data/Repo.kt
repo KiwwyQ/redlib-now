@@ -48,6 +48,7 @@ object Repo {
         MediaCache.init(context)
         FeedCache.init(context)
         Settings.init(context)
+        app.redlib.now.net.Anubis.init(context)
         readPosts = loadReadPosts()
         loadSaved()
     }

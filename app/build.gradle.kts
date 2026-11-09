@@ -12,8 +12,8 @@ android {
         applicationId = "app.redlib.now"
         minSdk = 26
         targetSdk = 34
-        versionCode = 20260831
-        versionName = "2026.08.31"
+        versionCode = 20261109
+        versionName = "2026.11.09"
     }
 
     // Persistent debug keystore so CI/local assembleDebug APKs share the same
